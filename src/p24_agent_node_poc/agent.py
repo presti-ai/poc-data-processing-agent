@@ -6,6 +6,7 @@ import pandas as pd
 from deepagents import create_deep_agent, SubAgent
 from deepagents.backends.filesystem import FilesystemBackend
 from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage
 from langchain_experimental.tools import PythonREPLTool
 from loguru import logger
 
@@ -62,48 +63,38 @@ def process_data(
             # Format output columns instructions
             columns_info = "\n".join([f"- {col['name']}: {col['description']}" for col in output_columns])
 
-            # Prepare system prompt
-            system_prompt = f"""You are a data processing agent. Your goal is to process the provided input files and create a final CSV file named 'output.csv'.
-
-Input files available in your workspace:
-{"\n".join(input_files_info)}
-
-The 'output.csv' MUST have the following columns:
-{columns_info}
+            # Prepare system prompt - General instructions only
+            system_prompt = """You are a data processing agent. Your goal is to process input files provided by the user and create a final CSV file named 'output.csv'.
 
 Instructions for output:
 - Read the input files using pandas.
-- Process the data according to the column descriptions.
+- Process the data according to the column descriptions provided in the user's request. 
 - Use the Python REPL tool to perform data manipulation and to save the final result as 'output.csv' in the current directory.
-- Use the internet_search tool to perform web searches via research-agent.
-- Use the fetch_html tool directly if you need to process HTML with your Python code.
+- Use the internet_search tool to perform web searches.
+- Use the fetch_html tool to fetch information from web pages.
 - Use your write_todos tool to write a list of TODOs for the next steps.
-- In your returned messages, explain what you are doing at each step.
+- Each time you use a tool, explain what you are doing and why.
 - The final 'output.csv' should contain the processed data with the specified columns.
 - Ensure that the final file is saved as 'output.csv'.
 """
 
+            # Prepare the user prompt with specific inputs and instructions
+            initial_message = f"""Start processing the data now. 
+
+Input files available in your workspace:
+{"\n".join(input_files_info)}
+
+The 'output.csv' MUST have the following columns. 
+IMPORTANT: The column description acts as a detailed instruction for the task you need to perform to populate that column.
+{columns_info}
+"""
+
             if additional_instructions:
-                system_prompt += f"\n\nAdditional instructions:\n{additional_instructions}"
+                initial_message += f"\nAdditional instructions:\n{additional_instructions}"
 
             # Initialize the agent with the specified backend and Python REPL tool
             # We set virtual_mode=False to allow the agent to work with the local temporary directory
             backend = FilesystemBackend(root_dir=workspace_root, virtual_mode=False)
-
-            # research_subagent = SubAgent(
-            #     name="research-agent",
-            #     description="Used to research more in depth questions",
-            #     system_prompt="You are a great researcher. Use internet_search to find information and fetch_html to get the raw HTML of specific pages if needed.",
-            #     tools=[internet_search, fetch_html],
-            # )
-            #
-            # html_fetcher_subagent = SubAgent(
-            #     name="html-fetcher-agent",
-            #     description="Used to answer questions by fetching the HTML of a specific URL. It is better for structured data extraction or finding information buried in HTML.",
-            #     system_prompt="You are a HTML extraction specialist. Given a URL and a query, use fetch_html to retrieve the content and then extract the relevant information from the HTML to answer the query.",
-            #     tools=[fetch_html],
-            # )
-            # subagents = [research_subagent, html_fetcher_subagent]
 
             logger.info(f"Creating deep agent with model: {model_name}")
 
@@ -115,14 +106,12 @@ Instructions for output:
                 # subagents=subagents
             )
 
-            initial_message = "Start processing the data now. The input files are available for you to read."
-
             # Run the agent in streaming mode
             logger.info("Invoking agent in streaming mode...")
             seen_message_ids = set()
             result = {}
             for chunk in agent.stream(
-                {"messages": [{"role": "user", "content": initial_message}]},
+                {"messages": [HumanMessage(content=initial_message)]},
                 config={"configurable": {"thread_id": "data_proc_session"}},
                 stream_mode="values"
             ):

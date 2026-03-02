@@ -33,7 +33,6 @@ def internet_search(
 @tool("Fetch_page_content")
 def fetch_page_content(url: str) -> str:
     """Fetch cleaned page content for a URL using Jina Reader (r.jina.ai). Use this for any HTTP/HTTPS link found in the CSVs."""
-    logger.success(f"Fetching page content from {url}")
     if not url.startswith("http://") and not url.startswith("https://"):
         return f"Invalid URL (must start with http:// or https://): {url}"
     reader_url = f"{jina_base}/{url}"
@@ -52,13 +51,35 @@ def fetch_page_content(url: str) -> str:
 
 @tool("Fetch_HTML_from_URL")
 def fetch_html(url: str) -> str:
-    """Fetch the raw HTML content of a URL. Use this when the cleaned content from 'Fetch page content' is not enough and you need the full HTML structure."""
+    """Fetch the raw HTML content of a URL. Use this when the cleaned content from 'Fetch page content' is not enough and you need the full HTML structure.
+    If the direct request fails with a 403 (e.g. due to bot protection), this tool will automatically try to fetch it via Jina Reader.
+    """
+    logger.success(f"Fetching page content from {url}")
     if not url.startswith("http://") and not url.startswith("https://"):
         return f"Invalid URL (must start with http:// or https://): {url}"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+
     try:
-        resp = requests.get(url, timeout=30)
+        resp = requests.get(url, headers=headers, timeout=30)
     except Exception as exc:  # pragma: no cover - network / connectivity errors
         return f"Request failed: {exc}"
+
+    if resp.status_code == 403:
+        logger.info(f"Direct request to {url} returned 403. Trying via Jina Reader...")
+        reader_url = f"{jina_base}/{url}"
+        jina_headers = {"X-Return-Format": "html"}
+        if jina_api_key:
+            jina_headers["Authorization"] = f"Bearer {jina_api_key}"
+        try:
+            resp = requests.get(reader_url, headers=jina_headers, timeout=30)
+        except Exception as exc:
+            return f"Jina Reader fallback failed: {exc}"
+
     if not resp.ok:
         snippet = resp.text[:500]
         return f"Request returned {resp.status_code}: {snippet}"
@@ -69,13 +90,14 @@ if __name__ == '__main__':
     logger.info(f"Testing {internet_search.name}")
     logger.info(internet_search.invoke("BUT tables"))
 
-    logger.info(f"Testing {fetch_page_content.name}")
-    logger.info("Google")
-    logger.info(fetch_page_content.invoke("https://www.google.com"))
-    logger.info("BUT")
-    logger.info(fetch_page_content.invoke("https://www.but.fr/produits/2099901526182/fiche.html"))
+    # logger.info(f"Testing {fetch_page_content.name}")
+    # logger.info("Google")
+    # logger.info(fetch_page_content.invoke("https://www.google.com"))
+    # logger.info("BUT")
+    # logger.info(fetch_page_content.invoke("https://www.but.fr/produits/2099901526182/fiche.html"))
 
     logger.info(f"Testing {fetch_html.name}")
     logger.info("Google HTML snippet")
-    html = fetch_html.invoke("https://www.google.com")
-    logger.info(html[:500])
+    logger.info(fetch_html.invoke("https://www.google.com")[:100])
+    logger.info("BUT HTML snippet")
+    logger.info(fetch_html.invoke("https://www.but.fr/produits/2099901526182/fiche.html")[:100])
