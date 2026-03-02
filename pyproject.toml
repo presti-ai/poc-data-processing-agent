@@ -1,0 +1,25 @@
+[project]
+name = "p24-agent-node-poc"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Antonin",email = "antonin@presti.ai"}
+]
+readme = "README.md"
+requires-python = ">=3.12,<4.0"
+dependencies = [
+    "pandas (>=3.0.1,<4.0.0)",
+    "openpyxl (>=3.1.5,<4.0.0)",
+    "langchain-openai (>=1.1.10,<2.0.0)",
+    "deepagents (>=0.4.4,<0.5.0)",
+    "langchain-community (>=0.4.1,<0.5.0)",
+    "langchain-experimental (>=0.4.1,<0.5.0)",
+    "tavily (>=1.1.0,<2.0.0)"
+]
+
+[tool.poetry]
+packages = [{include = "p24_agent_node_poc", from = "src"}]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
