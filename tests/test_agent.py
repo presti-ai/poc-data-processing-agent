@@ -33,7 +33,7 @@ class TestDataProcessingAgent(unittest.TestCase):
             # Since our process_data function uses a temp directory, we need to mock tempfile.TemporaryDirectory
             # to know where to put the output.csv file.
             with patch("tempfile.TemporaryDirectory") as mock_temp_dir:
-                workspace = "test_workspace"
+                workspace = os.path.abspath("test_workspace")
                 os.makedirs(workspace, exist_ok=True)
                 mock_temp_dir.return_value.__enter__.return_value = workspace
                 
@@ -67,7 +67,7 @@ class TestDataProcessingAgent(unittest.TestCase):
             mock_create_agent.return_value = mock_agent
             
             with patch("tempfile.TemporaryDirectory") as mock_temp_dir:
-                workspace = "test_workspace_error"
+                workspace = os.path.abspath("test_workspace_error")
                 os.makedirs(workspace, exist_ok=True)
                 mock_temp_dir.return_value.__enter__.return_value = workspace
                 
