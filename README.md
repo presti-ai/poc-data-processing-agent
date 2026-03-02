@@ -1,0 +1,41 @@
+# 🤖 P24 Agent Node POC
+
+A powerful data processing agent proof-of-concept that combines LLMs with Python execution and web tools to automate complex data tasks.
+
+## 🚀 Features
+
+- 🧠 **Deep Agent Architecture**: Uses `deepagents` to manage complex multi-step reasoning.
+- 🐍 **Code Execution**: Built-in `PythonREPLTool` for dynamic data manipulation with pandas.
+- 🌐 **Web Intelligence**: 
+    - `Internet_search`: Powered by Tavily for high-quality web results.
+    - `Fetch_HTML_from_URL`: Robust HTML extraction with automatic Jina Reader fallback to bypass bot detection (403 errors) 🛡️.
+- 📊 **CSV-to-CSV Workflow**: Input your data, define your goals, and get a structured `output.csv`.
+
+## 🛠️ Quick Start
+
+1. **Install dependencies**:
+   ```bash
+   poetry install
+   ```
+
+2. **Set up environment**:
+   Create a `.env` file with your API keys:
+   ```env
+   TAVILY_API_KEY=your_key
+   JINA_API_KEY=your_key (optional)
+   GOOGLE_API_KEY=your_key
+   ```
+
+3. **Run the demo**:
+   ```bash
+   python main.py
+   ```
+
+## 📂 Project Structure
+
+- `main.py`: Entry point for the data processing pipeline.
+- `src/p24_agent_node_poc/agent.py`: Core agent logic and system prompts.
+- `src/p24_agent_node_poc/tools.py`: Custom tools for search and web fetching.
+- `data/`: Sample datasets for testing.
+
+Built with ❤️ for efficient data automation.
