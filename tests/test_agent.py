@@ -21,14 +21,11 @@ class TestDataProcessingAgent(unittest.TestCase):
             mock_agent = MagicMock()
             mock_create_agent.return_value = mock_agent
             
-            # We need to simulate the agent creating the output.csv file
-            def side_effect(inputs, config):
-                # The workspace_root is a temporary directory, we need to find it.
-                # In the real code, it's a context manager.
-                # For testing, we can just mock it or intercept the call.
-                return {"messages": [{"role": "assistant", "content": "Done"}]}
+            # Mock the stream for default behavior
+            def side_effect(inputs, config, stream_mode="values"):
+                yield {"messages": [{"role": "assistant", "content": "Done"}]}
 
-            mock_agent.invoke.side_effect = side_effect
+            mock_agent.stream.side_effect = side_effect
             
             # Since our process_data function uses a temp directory, we need to mock tempfile.TemporaryDirectory
             # to know where to put the output.csv file.
@@ -37,20 +34,22 @@ class TestDataProcessingAgent(unittest.TestCase):
                 os.makedirs(workspace, exist_ok=True)
                 mock_temp_dir.return_value.__enter__.return_value = workspace
                 
-                # Mock the invoke to write the file
-                def invoke_with_file(state, config):
+                # Mock the stream to write the file and return messages
+                def stream_with_file(state, config, stream_mode="values"):
                     output_df = pd.DataFrame({"sum_A_B": [4, 6], "is_even": [True, True]})
                     output_df.to_csv(os.path.join(workspace, "output.csv"), index=False)
-                    return {"messages": [{"role": "assistant", "content": "Done"}]}
+                    # Yield a single chunk in "values" mode
+                    yield {"messages": [{"role": "assistant", "content": "Done"}]}
                 
-                mock_agent.invoke.side_effect = invoke_with_file
+                mock_agent.stream.side_effect = stream_with_file
                 
-                result_df = process_data(inputs, output_columns)
+                result_df, agent_result = process_data(inputs, output_columns)
                 
                 pd.testing.assert_frame_equal(
                     result_df,
                     pd.DataFrame({"sum_A_B": [4, 6], "is_even": [True, True]})
                 )
+                self.assertIn("messages", agent_result)
                 
                 # Clean up
                 import shutil
@@ -71,8 +70,11 @@ class TestDataProcessingAgent(unittest.TestCase):
                 os.makedirs(workspace, exist_ok=True)
                 mock_temp_dir.return_value.__enter__.return_value = workspace
                 
-                # Mock the invoke to NOT write the file
-                mock_agent.invoke.return_value = {"messages": [{"role": "assistant", "content": "Failed to create file"}]}
+                # Mock the stream to NOT write the file
+                def stream_no_file(state, config, stream_mode="values"):
+                    yield {"messages": [{"role": "assistant", "content": "Failed to create file"}]}
+                
+                mock_agent.stream.side_effect = stream_no_file
                 
                 with self.assertRaisesRegex(RuntimeError, "Agent failed to produce 'output.csv'"):
                     process_data(inputs, output_columns)

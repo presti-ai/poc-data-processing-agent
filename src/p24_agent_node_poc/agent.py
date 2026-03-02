@@ -1,33 +1,17 @@
 import os
 import tempfile
-from typing import Dict, List, Literal, Optional, Union
+from typing import Dict, List, Optional, Union
 
 import pandas as pd
-from deepagents import create_deep_agent
+from deepagents import create_deep_agent, SubAgent
 from deepagents.backends.filesystem import FilesystemBackend
 from dotenv import load_dotenv
 from langchain_experimental.tools import PythonREPLTool
 from loguru import logger
-from tavily import TavilyClient
+
+from p24_agent_node_poc.tools import fetch_html, internet_search
 
 load_dotenv()
-
-tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
-
-
-def internet_search(
-        query: str,
-        max_results: int = 5,
-        topic: Literal["general", "news", "finance"] = "general",
-        include_raw_content: bool = False,
-):
-    """Run a web search"""
-    return tavily_client.search(
-        query,
-        max_results=max_results,
-        include_raw_content=include_raw_content,
-        topic=topic,
-    )
 
 
 def process_data(
@@ -91,6 +75,10 @@ Instructions for output:
 - Read the input files using pandas.
 - Process the data according to the column descriptions.
 - Use the Python REPL tool to perform data manipulation and to save the final result as 'output.csv' in the current directory.
+- Use the internet_search tool to perform web searches via research-agent.
+- Use the fetch_html tool directly if you need to process HTML with your Python code.
+- Use your write_todos tool to write a list of TODOs for the next steps.
+- In your returned messages, explain what you are doing at each step.
 - The final 'output.csv' should contain the processed data with the specified columns.
 - Ensure that the final file is saved as 'output.csv'.
 """
@@ -102,32 +90,67 @@ Instructions for output:
             # We set virtual_mode=False to allow the agent to work with the local temporary directory
             backend = FilesystemBackend(root_dir=workspace_root, virtual_mode=False)
 
+            # research_subagent = SubAgent(
+            #     name="research-agent",
+            #     description="Used to research more in depth questions",
+            #     system_prompt="You are a great researcher. Use internet_search to find information and fetch_html to get the raw HTML of specific pages if needed.",
+            #     tools=[internet_search, fetch_html],
+            # )
+            #
+            # html_fetcher_subagent = SubAgent(
+            #     name="html-fetcher-agent",
+            #     description="Used to answer questions by fetching the HTML of a specific URL. It is better for structured data extraction or finding information buried in HTML.",
+            #     system_prompt="You are a HTML extraction specialist. Given a URL and a query, use fetch_html to retrieve the content and then extract the relevant information from the HTML to answer the query.",
+            #     tools=[fetch_html],
+            # )
+            # subagents = [research_subagent, html_fetcher_subagent]
+
             logger.info(f"Creating deep agent with model: {model_name}")
+
             agent = create_deep_agent(
                 model=model_name,
-                tools=[PythonREPLTool(), internet_search],
+                tools=[PythonREPLTool(), fetch_html],
                 system_prompt=system_prompt,
-                backend=backend
+                backend=backend,
+                # subagents=subagents
             )
 
             initial_message = "Start processing the data now. The input files are available for you to read."
 
-            # Run the agent
-            # We use a one-off run with a thread_id
-            logger.info("Invoking agent...")
-            result = agent.invoke(
+            # Run the agent in streaming mode
+            logger.info("Invoking agent in streaming mode...")
+            seen_message_ids = set()
+            result = {}
+            for chunk in agent.stream(
                 {"messages": [{"role": "user", "content": initial_message}]},
-                config={"configurable": {"thread_id": "data_proc_session"}}
-            )
-            logger.info("Agent invocation completed.")
+                config={"configurable": {"thread_id": "data_proc_session"}},
+                stream_mode="values"
+            ):
+                result = chunk
+                if "messages" in chunk:
+                    for msg in chunk["messages"]:
+                        msg_id = getattr(msg, "id", str(id(msg)))
+                        if msg_id not in seen_message_ids:
+                            seen_message_ids.add(msg_id)
+                            role = getattr(msg, "type", "unknown") if not isinstance(msg, dict) else msg.get("role", "unknown")
+                            content = getattr(msg, "content", "") if not isinstance(msg, dict) else msg.get("content", "")
+                            
+                            if content:
+                                if role == "tool":
+                                    tool_name = tc.get("name", "unknown")
+                                    logger.info(f"[{role} - {tool_name}] {content[:100]}")
+                                else:
+                                    logger.info(f"[{role}] {content}")
 
-            # Print agent messages at the end of the run
-            if "messages" in result:
-                logger.info("Agent messages history:")
-                for msg in result["messages"]:
-                    role = getattr(msg, "type", "unknown") if not isinstance(msg, dict) else msg.get("role", "unknown")
-                    content = getattr(msg, "content", "") if not isinstance(msg, dict) else msg.get("content", "")
-                    logger.info(f"[{role}] {content}")
+                            # Log tool calls if present in the message
+                            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                for tc in msg.tool_calls:
+                                    tool_name = tc.get("name", "unknown")
+                                    args = str(tc.get("args", ""))
+                                    summarized_args = (args[:20] + "...") if len(args) > 20 else args
+                                    logger.info(f"   Tool Call: {tool_name} with args: {summarized_args}")
+
+            logger.info("Agent invocation completed.")
 
             # After execution, check if output.csv exists in the workspace
             output_path = os.path.join(workspace_root, "output.csv")
