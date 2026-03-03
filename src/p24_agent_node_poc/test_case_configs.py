@@ -174,25 +174,37 @@ TEST_CASES: Dict[str, TestCaseConfig] = {
         key="uc5_complementary_products",
         title="Use Case 5 - Complementary Products",
         description=(
-            "Input is a sofa product. Find complementary products on the same merchant site (coffee table and rug)."
+            "Input is one product URL (any product type). Find products that complement it on the same merchant site."
         ),
         output_columns=[
-            {"name": "sofa_product_url", "description": "Input sofa URL."},
             {
-                "name": "recommended_coffee_table_url",
-                "description": "Best matching coffee table URL from the same site.",
+                "name": "product_url",
+                "description": "Input product URL from the dataset.",
             },
             {
-                "name": "recommended_rug_url",
-                "description": "Best matching rug URL from the same site.",
+                "name": "recommended_product_url_1",
+                "description": "Best first complementary product URL from the same site.",
+            },
+            {
+                "name": "recommended_product_url_2",
+                "description": "Second complementary product URL from the same site.",
+            },
+            {
+                "name": "recommended_product_url_3",
+                "description": "Third complementary product URL from the same site.",
+            },
+            {
+                "name": "recommended_product_types",
+                "description": "Short comma-separated list of recommended product types (e.g., rug, lamp, side table).",
             },
             {
                 "name": "recommendation_reason",
-                "description": "Short reason based on style/material/price range when available.",
+                "description": "Short reason based on style, color, room usage, and product type compatibility.",
             },
         ],
         additional_instructions=(
-            "This dataset intentionally uses placeholders for sofa URLs. Keep placeholder rows and add clear not-found comments."
+            "Infer the input product type from the page and choose complementary categories accordingly. "
+            "Do not assume all rows are the same product type."
         ),
         variants={
             "small": VariantSpec(
