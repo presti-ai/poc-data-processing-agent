@@ -75,6 +75,7 @@ TEST_CASES: Dict[str, TestCaseConfig] = {
             "From a product URL, extract the main product image URL and the product dimensions when available."
         ),
         output_columns=[
+            {"name": "Product Label", "description": "The label / name of the product."},
             {"name": "product_page_url", "description": "Input product page URL."},
             {"name": "main_packshot_url", "description": "Main product image URL (packshot)."},
             {"name": "width_cm", "description": "Product width in cm if found, otherwise blank."},
