@@ -79,7 +79,7 @@ def process_data(
                 [f"- {col['name']}: {col['description']}" for col in output_columns]
             )
 
-            system_prompt = f"""You are a data processing agent. Your goal is to process input files and create a final CSV file named 'output.csv'.
+            system_prompt = """You are a data processing agent. Your goal is to process input files and create a final CSV file named 'output.csv'.
 
 General instructions:
 - Read input files with pandas.
@@ -91,12 +91,10 @@ General instructions:
 - Ensure 'output.csv' contains the required columns and is saved before ending.
 
 Web fetching delegation policy (mandatory):
-- URL delegation threshold = {URL_DELEGATION_THRESHOLD}.
-- If candidate URL count is <= {URL_DELEGATION_THRESHOLD}, fetch directly in the main agent and do not delegate URL extraction to task subagents.
-- If candidate URL count is > {URL_DELEGATION_THRESHOLD}:
+- When you have to retrieve information from similar urls, delegate the task to subagents. Only do the fetching once to ensure its feasibility. 
   1) fetch one representative URL yourself first to validate extraction logic,
   2) then delegate the remaining URL extraction workload to one or more task subagents,
-  3) aggregate subagent outputs into final output.csv.
+  3) aggregate subagent outputs 
 - For large batches, prefer parallel subagent calls with independent URL chunks.
 """
 
