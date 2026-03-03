@@ -199,6 +199,6 @@ IMPORTANT: Each column description is a strict instruction for how to populate t
                 len(result_df.columns),
                 len(message_log),
             )
-            return result_df, messages_to_dict(message_log)
+            return result_df, message_log
         finally:
             os.chdir(original_cwd)

@@ -32,7 +32,7 @@ def _render_message_panel(messages: List[Dict[str, str]]) -> None:
             msg = msg.get("data", {})
             text = msg.get("content", "")
             if isinstance(text, list):
-                text = text[0].get("text", "")
+                text = text[0].get("text", "") if len(text) else ""
             tool_calls = msg.get("tool_calls", [])
             name = msg.get("name", "")
 
