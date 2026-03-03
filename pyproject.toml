@@ -16,7 +16,8 @@ dependencies = [
     "langchain-experimental (>=0.4.1,<0.5.0)",
     "tavily (>=1.1.0,<2.0.0)",
     "loguru (>=0.7.3,<0.8.0)",
-    "streamlit (>=1.28,<2.0)"
+    "streamlit (>=1.28,<2.0)",
+    "pandas-stubs (>=2.3.3,<2.4.0)"
 ]
 
 [tool.poetry]

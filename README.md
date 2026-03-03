@@ -31,17 +31,21 @@ A powerful data processing agent proof-of-concept that combines LLMs with Python
    poetry run python main.py
    ```
 
-4. **Run the Streamlit UI demo**:
+4. **Run the Streamlit multipage app**:
    ```bash
    poetry run streamlit run demo_app.py
    ```
+   Then use the sidebar pages:
+   - `01 Manual Agent Run`
+   - `02-07` predefined use-case test benches (small + 100-row scenarios)
 
 ## 📂 Project Structure
 
 - `main.py`: Entry point for the CLI data processing pipeline.
-- `demo_app.py`: Streamlit demo interface for interactive runs.
+- `demo_app.py`: Streamlit app entrypoint (home page for multipage navigation).
+- `pages/`: Streamlit pages including manual run page and 6 predefined test-case pages.
 - `src/p24_agent_node_poc/agent.py`: Core agent logic and system prompts.
 - `src/p24_agent_node_poc/tools.py`: Custom tools for search and web fetching.
-- `data/`: Sample datasets for testing.
+- `data/test_cases/`: Test datasets for each use case (`small` + `100-row` scenarios).
 
 Built with ❤️ for efficient data automation.
