@@ -8,7 +8,13 @@ import pandas as pd
 from deepagents import SubAgent, create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    messages_to_dict,
+    ToolMessage,
+)
 from langchain_experimental.tools import PythonREPLTool
 from loguru import logger
 
@@ -141,12 +147,40 @@ IMPORTANT: Each column description is a strict instruction for how to populate t
             seen_message_ids: set[str] = set()
 
             message_log = []
-            for chunk in agent.stream(
+            for stream_mode, chunk in agent.stream(
                 {"messages": [HumanMessage(content=initial_message)]},
                 config={"configurable": {"thread_id": "data_proc_session"}},
-                stream_mode="updates",
+                stream_mode=["updates", "values"],
             ):
-                logger.info("Received chunk: {}", chunk)
+                if stream_mode == "values":
+                    message_log = chunk
+                    continue
+
+                if not chunk.get("model") and not chunk.get("tools"):
+                    logger.debug("Received chunk: {}", chunk)
+
+                if model_chunk := chunk.get("model"):
+                    for message in model_chunk.get("messages", []):
+                        message: AIMessage
+                        if message.content:
+                            if isinstance(message.content, str):
+                                logger.info("Model - {}", message.content)
+                            elif (
+                                isinstance(message.content, list)
+                                and message.content[0]["type"] == "text"
+                            ):
+                                logger.info("Model - {}", message.content[0]["text"])
+                        if message.tool_calls:
+                            for tool_call in message.tool_calls:
+                                tool_call: dict
+                                logger.info("Model - Tool call: {}", tool_call["name"])
+                if tool_chunk := chunk.get("tools"):
+                    for message in tool_chunk.get("messages", []):
+                        message: ToolMessage
+                        if message.content:
+                            logger.info(
+                                "Tool {} - {}", message.name, str(message.content)[:50]
+                            )
 
             output_path = Path(workspace_root) / "output.csv"
             if not output_path.exists():
@@ -165,6 +199,6 @@ IMPORTANT: Each column description is a strict instruction for how to populate t
                 len(result_df.columns),
                 len(message_log),
             )
-            return result_df, message_log
+            return result_df, messages_to_dict(message_log)
         finally:
             os.chdir(original_cwd)

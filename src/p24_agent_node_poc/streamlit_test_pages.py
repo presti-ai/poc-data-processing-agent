@@ -4,6 +4,7 @@ from typing import Dict, List
 
 import pandas as pd
 import streamlit as st
+from langchain_core.messages import messages_to_dict
 
 from p24_agent_node_poc.agent import process_data
 from p24_agent_node_poc.test_case_configs import TEST_CASES, load_variant_input_files
@@ -26,13 +27,48 @@ def _render_message_panel(messages: List[Dict[str, str]]) -> None:
         st.info("Run the agent to display system, assistant, and tool messages.")
         return
 
-    for idx, msg in enumerate(messages):
-        role = msg.get("role", "unknown")
-        msg_type = msg.get("type", "text")
-        text = msg.get("display", "")
-        with st.chat_message("assistant"):
-            with st.expander(f"#{idx + 1} | role={role} | type={msg_type}", expanded=False):
-                st.markdown(text or "(empty message)")
+    for idx, msg in enumerate(messages_to_dict(messages["messages"])):
+        try:
+            msg = msg.get("data", {})
+            text = msg.get("content", "")
+            if isinstance(text, list):
+                text = text[0].get("text", "")
+            tool_calls = msg.get("tool_calls", [])
+            name = msg.get("name", "")
+
+            match role := msg.get("type", "unknown"):
+                case "human":
+                    with (
+                        st.chat_message("human"),
+                        st.expander(text[:20] + "...", expanded=False),
+                    ):
+                        st.markdown(text or "(empty message)")
+                        with st.popover("Full message"):
+                            st.write(msg)
+                case "ai":
+                    expander_text = (
+                        text[:20] + "..."
+                        if text
+                        else f"Tool(s) called: `{"`, `".join(tc["name"] for tc in tool_calls)}`"
+                        if tool_calls
+                        else "(empty message)"
+                    )
+                    with st.chat_message("ai"), st.expander(expander_text, expanded=False):
+                        st.write(text or tool_calls)
+                        with st.popover("Full message"):
+                            st.write(msg)
+                case "tool":
+                    with (
+                        st.chat_message("ai", avatar="⚙️"),
+                        st.expander(f"Tool `{name}`", expanded=False),
+                    ):
+                        st.write(text or "(empty message)")
+                        with st.popover("Full message"):
+                            st.write(msg)
+        except Exception as e:
+            with st.expander(f"Error processing message {idx}", expanded=False):
+                st.error(f"Error processing message: {e}")
+                st.write(msg)
 
 
 def render_manual_page() -> None:
@@ -78,11 +114,18 @@ def render_manual_page() -> None:
             if st.button("Add column", key="manual_add_column"):
                 schema_rows.append({"name": "", "description": ""})
         with remove_col:
-            if st.button("Remove last column", key="manual_remove_column") and len(schema_rows) > 1:
+            if (
+                st.button("Remove last column", key="manual_remove_column")
+                and len(schema_rows) > 1
+            ):
                 schema_rows.pop()
 
         for idx, row in enumerate(schema_rows):
-            st.text_input(f"Column {idx + 1} name", value=row.get("name", ""), key=f"col_name_{idx}")
+            st.text_input(
+                f"Column {idx + 1} name",
+                value=row.get("name", ""),
+                key=f"col_name_{idx}",
+            )
             st.text_input(
                 f"Column {idx + 1} description",
                 value=row.get("description", ""),
@@ -108,7 +151,10 @@ def render_manual_page() -> None:
                                 destination = Path(upload_root) / uploaded.name
                                 counter = 1
                                 while destination.exists():
-                                    destination = Path(upload_root) / f"{destination.stem}_{counter}{destination.suffix}"
+                                    destination = (
+                                        Path(upload_root)
+                                        / f"{destination.stem}_{counter}{destination.suffix}"
+                                    )
                                     counter += 1
                                 destination.write_bytes(uploaded.getvalue())
                                 input_paths.append(destination)
@@ -161,7 +207,9 @@ def render_test_case_page(case_key: str) -> None:
         variant = st.radio(
             "Scenario",
             options=["small", "large"],
-            format_func=lambda value: "Small debug set" if value == "small" else "Large batch (100 rows)",
+            format_func=lambda value: "Small debug set"
+            if value == "small"
+            else "Large batch (100 rows)",
             key=f"{state_prefix}_variant",
         )
 
@@ -185,7 +233,9 @@ def render_test_case_page(case_key: str) -> None:
             height=120,
         )
 
-        run_clicked = st.button("Run this test case", type="primary", key=f"{state_prefix}_run")
+        run_clicked = st.button(
+            "Run this test case", type="primary", key=f"{state_prefix}_run"
+        )
         if run_clicked:
             input_paths = [path for _, path, _ in loaded_inputs]
             with st.spinner("Running agent... this may take a few minutes."):
@@ -196,6 +246,7 @@ def render_test_case_page(case_key: str) -> None:
                         additional_instructions=additional_instructions or None,
                         model_name=model_name,
                     )
+                    st.write(messages)
                 except Exception as exc:
                     st.error(f"Agent run failed: {exc}")
                     raise
