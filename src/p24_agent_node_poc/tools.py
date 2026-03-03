@@ -16,10 +16,10 @@ jina_api_key = os.getenv("JINA_API_KEY")
 
 @tool("Internet_search")
 def internet_search(
-        query: str,
-        max_results: int = 5,
-        topic: Literal["general", "news", "finance"] = "general",
-        include_raw_content: bool = False,
+    query: str,
+    max_results: int = 5,
+    topic: Literal["general", "news", "finance"] = "general",
+    include_raw_content: bool = False,
 ):
     """Run a web search"""
     return tavily_client.search(
@@ -86,18 +86,14 @@ def fetch_html(url: str) -> str:
     return resp.text
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     logger.info(f"Testing {internet_search.name}")
     logger.info(internet_search.invoke("BUT tables"))
-
-    # logger.info(f"Testing {fetch_page_content.name}")
-    # logger.info("Google")
-    # logger.info(fetch_page_content.invoke("https://www.google.com"))
-    # logger.info("BUT")
-    # logger.info(fetch_page_content.invoke("https://www.but.fr/produits/2099901526182/fiche.html"))
 
     logger.info(f"Testing {fetch_html.name}")
     logger.info("Google HTML snippet")
     logger.info(fetch_html.invoke("https://www.google.com")[:100])
     logger.info("BUT HTML snippet")
-    logger.info(fetch_html.invoke("https://www.but.fr/produits/2099901526182/fiche.html")[:100])
+    logger.info(
+        fetch_html.invoke("https://www.but.fr/produits/2099901526182/fiche.html")[:100]
+    )
