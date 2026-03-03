@@ -89,105 +89,109 @@ def render_manual_page() -> None:
             key="manual_model_name",
         )
 
-    col_left, col_right = st.columns([2, 1])
+    st.subheader("Input files")
+    uploaded_files = st.file_uploader(
+        "Upload one or more files (CSV/Excel/text or mixed)",
+        accept_multiple_files=True,
+        key="manual_input_files",
+    )
 
-    with col_left:
-        st.subheader("Input files")
-        uploaded_files = st.file_uploader(
-            "Upload one or more files (CSV/Excel/text or mixed)",
-            accept_multiple_files=True,
-            key="manual_input_files",
+    st.subheader("Additional instructions")
+    use_additional_instructions = st.toggle(
+        "Send additional instructions",
+        value=False,
+        key="manual_use_additional_instructions",
+    )
+    additional_instructions = st.text_area(
+        "Guidance for the agent",
+        help="Describe constraints, extraction rules, and expected output behavior.",
+        key="manual_additional_instructions",
+        disabled=not use_additional_instructions,
+    )
+
+    st.subheader("Output schema")
+    schema_rows = st.session_state.get("output_schema", [])
+
+    add_col, remove_col = st.columns(2)
+    with add_col:
+        if st.button("Add column", key="manual_add_column"):
+            schema_rows.append({"name": "", "description": ""})
+    with remove_col:
+        if (
+            st.button("Remove last column", key="manual_remove_column")
+            and len(schema_rows) > 1
+        ):
+            schema_rows.pop()
+
+    for idx, row in enumerate(schema_rows):
+        st.text_input(
+            f"Column {idx + 1} name",
+            value=row.get("name", ""),
+            key=f"col_name_{idx}",
+        )
+        st.text_input(
+            f"Column {idx + 1} description",
+            value=row.get("description", ""),
+            key=f"col_desc_{idx}",
+        )
+        st.markdown("---")
+
+    st.session_state["output_schema"] = schema_rows
+    run_clicked = st.button("Run agent", type="primary", key="manual_run")
+
+    if run_clicked:
+        output_columns = _build_output_columns()
+        if not output_columns:
+            st.error("Please define at least one output column (with a name).")
+        elif not uploaded_files:
+            st.error("Please upload at least one input file.")
+        else:
+            with st.spinner("Running agent... this may take a few minutes."):
+                try:
+                    with tempfile.TemporaryDirectory() as upload_root:
+                        input_paths: List[Path] = []
+                        for i, uploaded in enumerate(uploaded_files):
+                            destination = Path(upload_root) / uploaded.name
+                            counter = 1
+                            while destination.exists():
+                                destination = (
+                                    Path(upload_root)
+                                    / f"{destination.stem}_{counter}{destination.suffix}"
+                                )
+                                counter += 1
+                            destination.write_bytes(uploaded.getvalue())
+                            input_paths.append(destination)
+
+                        result_df, messages = process_data(
+                            input_files=input_paths,
+                            output_columns=output_columns,
+                            additional_instructions=(additional_instructions or None)
+                            if use_additional_instructions
+                            else None,
+                            model_name=model_name,
+                        )
+                except Exception as exc:
+                    st.error(f"Agent run failed: {exc}")
+                    raise
+                else:
+                    st.session_state["manual_result_df"] = result_df
+                    st.session_state["manual_messages"] = messages
+
+    if "manual_result_df" in st.session_state:
+        result_df = st.session_state["manual_result_df"]
+        st.success("Agent run completed.")
+        st.subheader("Output")
+        st.dataframe(result_df)
+        csv_bytes = result_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download output as CSV",
+            data=csv_bytes,
+            file_name="output.csv",
+            mime="text/csv",
+            key="manual_download",
         )
 
-        st.subheader("Additional instructions")
-        additional_instructions = st.text_area(
-            "Guidance for the agent",
-            help="Describe constraints, extraction rules, and expected output behavior.",
-            key="manual_additional_instructions",
-        )
-
-        st.subheader("Output schema")
-        schema_rows = st.session_state.get("output_schema", [])
-
-        add_col, remove_col = st.columns(2)
-        with add_col:
-            if st.button("Add column", key="manual_add_column"):
-                schema_rows.append({"name": "", "description": ""})
-        with remove_col:
-            if (
-                st.button("Remove last column", key="manual_remove_column")
-                and len(schema_rows) > 1
-            ):
-                schema_rows.pop()
-
-        for idx, row in enumerate(schema_rows):
-            st.text_input(
-                f"Column {idx + 1} name",
-                value=row.get("name", ""),
-                key=f"col_name_{idx}",
-            )
-            st.text_input(
-                f"Column {idx + 1} description",
-                value=row.get("description", ""),
-                key=f"col_desc_{idx}",
-            )
-            st.markdown("---")
-
-        st.session_state["output_schema"] = schema_rows
-        run_clicked = st.button("Run agent", type="primary", key="manual_run")
-
-        if run_clicked:
-            output_columns = _build_output_columns()
-            if not output_columns:
-                st.error("Please define at least one output column (with a name).")
-            elif not uploaded_files:
-                st.error("Please upload at least one input file.")
-            else:
-                with st.spinner("Running agent... this may take a few minutes."):
-                    try:
-                        with tempfile.TemporaryDirectory() as upload_root:
-                            input_paths: List[Path] = []
-                            for i, uploaded in enumerate(uploaded_files):
-                                destination = Path(upload_root) / uploaded.name
-                                counter = 1
-                                while destination.exists():
-                                    destination = (
-                                        Path(upload_root)
-                                        / f"{destination.stem}_{counter}{destination.suffix}"
-                                    )
-                                    counter += 1
-                                destination.write_bytes(uploaded.getvalue())
-                                input_paths.append(destination)
-
-                            result_df, messages = process_data(
-                                input_files=input_paths,
-                                output_columns=output_columns,
-                                additional_instructions=additional_instructions or None,
-                                model_name=model_name,
-                            )
-                    except Exception as exc:
-                        st.error(f"Agent run failed: {exc}")
-                        raise
-                    else:
-                        st.session_state["manual_result_df"] = result_df
-                        st.session_state["manual_messages"] = messages
-
-        if "manual_result_df" in st.session_state:
-            result_df = st.session_state["manual_result_df"]
-            st.success("Agent run completed.")
-            st.subheader("Output")
-            st.dataframe(result_df)
-            csv_bytes = result_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="Download output as CSV",
-                data=csv_bytes,
-                file_name="output.csv",
-                mime="text/csv",
-                key="manual_download",
-            )
-
-    with col_right:
-        _render_message_panel(st.session_state.get("manual_messages", []))
+    _render_message_panel(st.session_state.get("manual_messages", []))
 
 
 def render_test_case_page(case_key: str) -> None:
@@ -215,57 +219,59 @@ def render_test_case_page(case_key: str) -> None:
 
     loaded_inputs = load_variant_input_files(case_key, variant)
 
-    col_left, col_right = st.columns([2, 1])
+    st.subheader("Inputs")
+    for label, path, df in loaded_inputs:
+        with st.expander(f"{label} ({len(df)} rows) - {path.name}", expanded=False):
+            st.dataframe(df)
 
-    with col_left:
-        st.subheader("Inputs")
-        for label, path, df in loaded_inputs:
-            with st.expander(f"{label} ({len(df)} rows) - {path.name}", expanded=False):
-                st.dataframe(df)
+    st.subheader("Target output schema")
+    st.dataframe(pd.DataFrame(config.output_columns))
 
-        st.subheader("Target output schema")
-        st.dataframe(pd.DataFrame(config.output_columns))
+    use_additional_instructions = st.toggle(
+        "Send additional instructions",
+        value=False,
+        key=f"{state_prefix}_use_instructions",
+    )
+    additional_instructions = st.text_area(
+        "Additional instructions",
+        value=config.additional_instructions,
+        key=f"{state_prefix}_instructions",
+        height=120,
+        disabled=not use_additional_instructions,
+    )
 
-        additional_instructions = st.text_area(
-            "Additional instructions",
-            value=config.additional_instructions,
-            key=f"{state_prefix}_instructions",
-            height=120,
+    run_clicked = st.button("Run this test case", type="primary", key=f"{state_prefix}_run")
+    if run_clicked:
+        input_paths = [path for _, path, _ in loaded_inputs]
+        with st.spinner("Running agent... this may take a few minutes."):
+            try:
+                result_df, messages = process_data(
+                    input_files=input_paths,
+                    output_columns=config.output_columns,
+                    additional_instructions=(additional_instructions or None)
+                    if use_additional_instructions
+                    else None,
+                    model_name=model_name,
+                )
+                st.write(messages)
+            except Exception as exc:
+                st.error(f"Agent run failed: {exc}")
+                raise
+            else:
+                st.session_state[f"{state_prefix}_result_df"] = result_df
+                st.session_state[f"{state_prefix}_messages"] = messages
+
+    if f"{state_prefix}_result_df" in st.session_state:
+        result_df = st.session_state[f"{state_prefix}_result_df"]
+        st.subheader("Output")
+        st.dataframe(result_df)
+        csv_bytes = result_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download output CSV",
+            data=csv_bytes,
+            file_name=f"{case_key}_{variant}_output.csv",
+            mime="text/csv",
+            key=f"{state_prefix}_download",
         )
 
-        run_clicked = st.button(
-            "Run this test case", type="primary", key=f"{state_prefix}_run"
-        )
-        if run_clicked:
-            input_paths = [path for _, path, _ in loaded_inputs]
-            with st.spinner("Running agent... this may take a few minutes."):
-                try:
-                    result_df, messages = process_data(
-                        input_files=input_paths,
-                        output_columns=config.output_columns,
-                        additional_instructions=additional_instructions or None,
-                        model_name=model_name,
-                    )
-                    st.write(messages)
-                except Exception as exc:
-                    st.error(f"Agent run failed: {exc}")
-                    raise
-                else:
-                    st.session_state[f"{state_prefix}_result_df"] = result_df
-                    st.session_state[f"{state_prefix}_messages"] = messages
-
-        if f"{state_prefix}_result_df" in st.session_state:
-            result_df = st.session_state[f"{state_prefix}_result_df"]
-            st.subheader("Output")
-            st.dataframe(result_df)
-            csv_bytes = result_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="Download output CSV",
-                data=csv_bytes,
-                file_name=f"{case_key}_{variant}_output.csv",
-                mime="text/csv",
-                key=f"{state_prefix}_download",
-            )
-
-    with col_right:
-        _render_message_panel(st.session_state.get(f"{state_prefix}_messages", []))
+    _render_message_panel(st.session_state.get(f"{state_prefix}_messages", []))
