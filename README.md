@@ -33,7 +33,7 @@ A powerful data processing agent proof-of-concept that combines LLMs with Python
 
 4. **Run the Streamlit multipage app**:
    ```bash
-   poetry run streamlit run demo_app.py
+   poetry run streamlit run streamlit_app.py
    ```
    Then use the sidebar pages:
    - `01 Manual Agent Run`
@@ -42,7 +42,7 @@ A powerful data processing agent proof-of-concept that combines LLMs with Python
 ## 📂 Project Structure
 
 - `main.py`: Entry point for the CLI data processing pipeline.
-- `demo_app.py`: Streamlit app entrypoint (home page for multipage navigation).
+- `streamlit_app.py`: Streamlit app entrypoint (home page for multipage navigation).
 - `pages/`: Streamlit pages including manual run page and 6 predefined test-case pages.
 - `src/p24_agent_node_poc/agent.py`: Core agent logic and system prompts.
 - `src/p24_agent_node_poc/tools.py`: Custom tools for search and web fetching.

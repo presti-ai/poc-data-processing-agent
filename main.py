@@ -1,11 +1,11 @@
-import pandas as pd
+from pathlib import Path
 
 from p24_agent_node_poc.agent import process_data
 
-df_tables = pd.read_csv("data/but/but-tables.csv")
-df_chairs = pd.read_csv("data/but/but-chairs.csv")
-
-_inputs = [df_tables.head(1), df_chairs.sample(10)]
+_inputs = [
+    Path("data/test_cases/uc4_match_tables_chairs/small_tables.csv"),
+    Path("data/test_cases/uc4_match_tables_chairs/small_chairs.csv"),
+]
 
 _output_columns = [
     {"name": "Table EAN", "description": "The EAN (product identifier) of the table"},
@@ -22,4 +22,8 @@ _output_columns = [
 
 additional_instructions = ""
 
-res, messages = process_data(_inputs, _output_columns, additional_instructions)
+res, messages = process_data(
+    input_files=_inputs,
+    output_columns=_output_columns,
+    additional_instructions=additional_instructions,
+)

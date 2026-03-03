@@ -1,32 +1,12 @@
-import io
-from typing import Dict, List, Optional, Tuple
+import tempfile
+from pathlib import Path
+from typing import Dict, List
 
 import pandas as pd
 import streamlit as st
 
 from p24_agent_node_poc.agent import process_data
-from p24_agent_node_poc.test_case_configs import TEST_CASES, load_variant_inputs
-
-
-def _load_main_dataset(file) -> Optional[pd.DataFrame]:
-    if file is None:
-        return None
-
-    name = file.name.lower()
-    try:
-        if name.endswith(".csv"):
-            return pd.read_csv(file)
-        if name.endswith(".xlsx") or name.endswith(".xls"):
-            return pd.read_excel(file)
-
-        try:
-            return pd.read_csv(file)
-        except Exception:
-            file.seek(0)
-            return pd.read_excel(file)
-    except Exception as exc:
-        st.error(f"Failed to load main dataset: {exc}")
-        return None
+from p24_agent_node_poc.test_case_configs import TEST_CASES, load_variant_input_files
 
 
 def _build_output_columns() -> List[Dict[str, str]]:
@@ -57,10 +37,7 @@ def _render_message_panel(messages: List[Dict[str, str]]) -> None:
 
 def render_manual_page() -> None:
     st.title("Manual Agent Run")
-    st.write(
-        "Upload your own datasets, define the output schema, and run the agent. "
-        "This is the original free-form page moved into multipage mode."
-    )
+    st.write("Upload files, define the output schema, and run the agent.")
 
     if "output_schema" not in st.session_state:
         st.session_state["output_schema"] = [
@@ -73,18 +50,17 @@ def render_manual_page() -> None:
         model_name = st.text_input(
             "Model name",
             value="google_genai:gemini-3-flash-preview",
-            help="Passed through to the underlying agent.",
             key="manual_model_name",
         )
 
     col_left, col_right = st.columns([2, 1])
 
     with col_left:
-        st.subheader("Main dataset (optional)")
-        main_file = st.file_uploader(
-            "Upload a main CSV/Excel file",
-            type=["csv", "xlsx", "xls"],
-            key="main_dataset",
+        st.subheader("Input files")
+        uploaded_files = st.file_uploader(
+            "Upload one or more files (CSV/Excel/text or mixed)",
+            accept_multiple_files=True,
+            key="manual_input_files",
         )
 
         st.subheader("Additional instructions")
@@ -92,13 +68,6 @@ def render_manual_page() -> None:
             "Guidance for the agent",
             help="Describe constraints, extraction rules, and expected output behavior.",
             key="manual_additional_instructions",
-        )
-
-        st.subheader("Additional files (any type)")
-        uploaded_files = st.file_uploader(
-            "Upload one or more files",
-            accept_multiple_files=True,
-            key="extra_files",
         )
 
         st.subheader("Output schema")
@@ -113,11 +82,7 @@ def render_manual_page() -> None:
                 schema_rows.pop()
 
         for idx, row in enumerate(schema_rows):
-            st.text_input(
-                f"Column {idx + 1} name",
-                value=row.get("name", ""),
-                key=f"col_name_{idx}",
-            )
+            st.text_input(f"Column {idx + 1} name", value=row.get("name", ""), key=f"col_name_{idx}")
             st.text_input(
                 f"Column {idx + 1} description",
                 value=row.get("description", ""),
@@ -132,26 +97,28 @@ def render_manual_page() -> None:
             output_columns = _build_output_columns()
             if not output_columns:
                 st.error("Please define at least one output column (with a name).")
+            elif not uploaded_files:
+                st.error("Please upload at least one input file.")
             else:
-                main_dataset_df = _load_main_dataset(main_file)
-                extra_files: List[Tuple[str, bytes]] = []
-                for file in uploaded_files or []:
-                    try:
-                        content = file.getvalue()
-                    except Exception:
-                        content = io.BytesIO(file.read()).getvalue()
-                    extra_files.append((file.name, content))
-
                 with st.spinner("Running agent... this may take a few minutes."):
                     try:
-                        result_df, messages = process_data(
-                            inputs=None,
-                            output_columns=output_columns,
-                            additional_instructions=additional_instructions or None,
-                            model_name=model_name,
-                            main_dataset=main_dataset_df,
-                            files=extra_files,
-                        )
+                        with tempfile.TemporaryDirectory() as upload_root:
+                            input_paths: List[Path] = []
+                            for i, uploaded in enumerate(uploaded_files):
+                                destination = Path(upload_root) / uploaded.name
+                                counter = 1
+                                while destination.exists():
+                                    destination = Path(upload_root) / f"{destination.stem}_{counter}{destination.suffix}"
+                                    counter += 1
+                                destination.write_bytes(uploaded.getvalue())
+                                input_paths.append(destination)
+
+                            result_df, messages = process_data(
+                                input_files=input_paths,
+                                output_columns=output_columns,
+                                additional_instructions=additional_instructions or None,
+                                model_name=model_name,
+                            )
                     except Exception as exc:
                         st.error(f"Agent run failed: {exc}")
                     else:
@@ -197,14 +164,14 @@ def render_test_case_page(case_key: str) -> None:
             key=f"{state_prefix}_variant",
         )
 
-    loaded_inputs = load_variant_inputs(case_key, variant)
+    loaded_inputs = load_variant_input_files(case_key, variant)
 
     col_left, col_right = st.columns([2, 1])
 
     with col_left:
         st.subheader("Inputs")
-        for label, df in loaded_inputs:
-            with st.expander(f"{label} ({len(df)} rows)", expanded=False):
+        for label, path, df in loaded_inputs:
+            with st.expander(f"{label} ({len(df)} rows) - {path.name}", expanded=False):
                 st.dataframe(df)
 
         st.subheader("Target output schema")
@@ -219,16 +186,14 @@ def render_test_case_page(case_key: str) -> None:
 
         run_clicked = st.button("Run this test case", type="primary", key=f"{state_prefix}_run")
         if run_clicked:
-            main_dataset = loaded_inputs[0][1]
-            extra_inputs = [df for _, df in loaded_inputs[1:]]
+            input_paths = [path for _, path, _ in loaded_inputs]
             with st.spinner("Running agent... this may take a few minutes."):
                 try:
                     result_df, messages = process_data(
-                        inputs=extra_inputs or None,
+                        input_files=input_paths,
                         output_columns=config.output_columns,
                         additional_instructions=additional_instructions or None,
                         model_name=model_name,
-                        main_dataset=main_dataset,
                     )
                 except Exception as exc:
                     st.error(f"Agent run failed: {exc}")

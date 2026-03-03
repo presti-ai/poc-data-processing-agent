@@ -246,11 +246,11 @@ TEST_CASES: Dict[str, TestCaseConfig] = {
 }
 
 
-def load_variant_inputs(case_key: str, variant_key: str) -> List[tuple[str, pd.DataFrame]]:
+def load_variant_input_files(case_key: str, variant_key: str) -> List[tuple[str, Path, pd.DataFrame]]:
     config = TEST_CASES[case_key]
     variant = config.variants[variant_key]
-    loaded: List[tuple[str, pd.DataFrame]] = []
+    loaded: List[tuple[str, Path, pd.DataFrame]] = []
     for file_spec in variant.files:
         file_path = PROJECT_ROOT / file_spec.relative_path
-        loaded.append((file_spec.label, pd.read_csv(file_path)))
+        loaded.append((file_spec.label, file_path, pd.read_csv(file_path)))
     return loaded
