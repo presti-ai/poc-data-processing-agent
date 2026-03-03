@@ -1,6 +1,6 @@
 import os
 import tempfile
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 from deepagents import create_deep_agent, SubAgent
@@ -16,10 +16,12 @@ load_dotenv()
 
 
 def process_data(
-        inputs: List[Union[pd.DataFrame, str]],
+        inputs: Optional[List[Union[pd.DataFrame, str]]],
         output_columns: List[Dict[str, str]],
         additional_instructions: Optional[str] = None,
         model_name: str = "google_genai:gemini-3-flash-preview",
+        main_dataset: Optional[pd.DataFrame] = None,
+        files: Optional[List[Tuple[str, bytes]]] = None,
 ) -> tuple[pd.DataFrame, List[Dict[str, str]]]:
     """
     Process input data using a Deep Agent and return a DataFrame.
@@ -44,8 +46,17 @@ def process_data(
 
         try:
             # Prepare inputs
-            input_files_info = []
-            for i, item in enumerate(inputs):
+            input_files_info: List[str] = []
+
+            combined_inputs: List[Union[pd.DataFrame, str]] = []
+
+            if main_dataset is not None:
+                combined_inputs.append(main_dataset)
+
+            if inputs:
+                combined_inputs.extend(inputs)
+
+            for i, item in enumerate(combined_inputs):
                 if isinstance(item, pd.DataFrame):
                     filename = f"input_{i}.csv"
                     filepath = os.path.join(workspace_root, filename)
@@ -59,6 +70,25 @@ def process_data(
                         f.write(item)
                     input_files_info.append(f"- {filename} (String input {i})")
                     logger.debug(f"Input String {i} saved as {filename}")
+
+            # Save any additional uploaded files directly into the workspace
+            if files:
+                for original_name, content in files:
+                    safe_name = os.path.basename(original_name) or "uploaded_file"
+                    base, ext = os.path.splitext(safe_name)
+                    candidate_name = safe_name
+                    target_path = os.path.join(workspace_root, candidate_name)
+                    counter = 1
+                    while os.path.exists(target_path):
+                        candidate_name = f"{base}_{counter}{ext}"
+                        target_path = os.path.join(workspace_root, candidate_name)
+                        counter += 1
+
+                    with open(target_path, "wb") as f:
+                        f.write(content)
+
+                    input_files_info.append(f"- {candidate_name} (Uploaded file)")
+                    logger.debug(f"Uploaded file saved as {candidate_name}")
 
             # Format output columns instructions
             columns_info = "\n".join([f"- {col['name']}: {col['description']}" for col in output_columns])
@@ -123,19 +153,30 @@ IMPORTANT: The column description acts as a detailed instruction for the task yo
                             seen_message_ids.add(msg_id)
                             role = getattr(msg, "type", "unknown") if not isinstance(msg, dict) else msg.get("role", "unknown")
                             content = getattr(msg, "content", "") if not isinstance(msg, dict) else msg.get("content", "")
-                            
+
                             if content:
                                 if role == "tool":
-                                    tool_name = tc.get("name", "unknown")
-                                    logger.info(f"[{role} - {tool_name}] {content[:100]}")
+                                    tool_name = "unknown"
+                                    tool_calls = getattr(msg, "tool_calls", None)
+                                    if tool_calls:
+                                        first_tc = tool_calls[0]
+                                        if isinstance(first_tc, dict):
+                                            tool_name = first_tc.get("name", "unknown")
+                                        else:
+                                            tool_name = getattr(first_tc, "name", "unknown")
+                                    logger.info(f"[{role} - {tool_name}] {str(content)[:100]}")
                                 else:
                                     logger.info(f"[{role}] {content}")
 
                             # Log tool calls if present in the message
                             if hasattr(msg, "tool_calls") and msg.tool_calls:
                                 for tc in msg.tool_calls:
-                                    tool_name = tc.get("name", "unknown")
-                                    args = str(tc.get("args", ""))
+                                    if isinstance(tc, dict):
+                                        tool_name = tc.get("name", "unknown")
+                                        args = str(tc.get("args", ""))
+                                    else:
+                                        tool_name = getattr(tc, "name", "unknown")
+                                        args = str(getattr(tc, "args", ""))
                                     summarized_args = (args[:20] + "...") if len(args) > 20 else args
                                     logger.info(f"   Tool Call: {tool_name} with args: {summarized_args}")
 

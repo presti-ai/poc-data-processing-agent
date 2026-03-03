@@ -26,14 +26,20 @@ A powerful data processing agent proof-of-concept that combines LLMs with Python
    GOOGLE_API_KEY=your_key
    ```
 
-3. **Run the demo**:
+3. **Run the CLI demo**:
    ```bash
-   python main.py
+   poetry run python main.py
+   ```
+
+4. **Run the Streamlit UI demo**:
+   ```bash
+   poetry run streamlit run demo_app.py
    ```
 
 ## 📂 Project Structure
 
-- `main.py`: Entry point for the data processing pipeline.
+- `main.py`: Entry point for the CLI data processing pipeline.
+- `demo_app.py`: Streamlit demo interface for interactive runs.
 - `src/p24_agent_node_poc/agent.py`: Core agent logic and system prompts.
 - `src/p24_agent_node_poc/tools.py`: Custom tools for search and web fetching.
 - `data/`: Sample datasets for testing.
