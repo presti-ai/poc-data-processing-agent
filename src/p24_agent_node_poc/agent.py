@@ -1,15 +1,14 @@
 import os
-import re
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
-from deepagents import create_deep_agent, SubAgent
+from deepagents import SubAgent, create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from langchain_experimental.tools import PythonREPLTool
 from loguru import logger
 
@@ -46,24 +45,33 @@ def process_data(
 
             for i, source_path in enumerate(resolved_input_files):
                 if not source_path.exists() or not source_path.is_file():
-                    raise FileNotFoundError(f"Input file not found or not a file: {source_path}")
+                    raise FileNotFoundError(
+                        f"Input file not found or not a file: {source_path}"
+                    )
 
                 candidate_name = source_path.name or f"input_{i}"
                 destination_path = Path(workspace_root) / candidate_name
                 counter = 1
                 while destination_path.exists():
-                    destination_path = Path(workspace_root) / f"{source_path.stem}_{counter}{source_path.suffix}"
+                    destination_path = (
+                        Path(workspace_root)
+                        / f"{source_path.stem}_{counter}{source_path.suffix}"
+                    )
                     counter += 1
 
                 shutil.copy2(source_path, destination_path)
                 copied_files.append(destination_path.name)
 
                 try:
-                    content = destination_path.read_text(encoding="utf-8", errors="ignore")
+                    content = destination_path.read_text(
+                        encoding="utf-8", errors="ignore"
+                    )
                 except Exception:
                     pass
 
-            columns_info = "\n".join([f"- {col['name']}: {col['description']}" for col in output_columns])
+            columns_info = "\n".join(
+                [f"- {col['name']}: {col['description']}" for col in output_columns]
+            )
 
             system_prompt = f"""You are a data processing agent. Your goal is to process input files and create a final CSV file named 'output.csv'.
 
@@ -97,14 +105,11 @@ IMPORTANT: Each column description is a strict instruction for how to populate t
 """
 
             if additional_instructions:
-                initial_message += f"\nAdditional instructions:\n{additional_instructions}"
+                initial_message += (
+                    f"\nAdditional instructions:\n{additional_instructions}"
+                )
 
-            logger.info(
-                "Workspace ready with {} file(s)",
-                len(copied_files)
-            )
-
-
+            logger.info("Workspace ready with {} file(s)", len(copied_files))
 
             backend = FilesystemBackend(root_dir=workspace_root, virtual_mode=False)
             subagents = [
@@ -115,12 +120,18 @@ IMPORTANT: Each column description is a strict instruction for how to populate t
                     ),
                     system_prompt=(
                         "You are a sub-agent specialized in web fetching for CSV enrichment. Focus on the assigned URLs and return concise structured results."
-                    ),tools=[fetch_html]
+                    ),
+                    tools=[fetch_html],
                 ),
             ]
             agent = create_deep_agent(
                 model=model_name,
-                tools=[PythonREPLTool(), internet_search, fetch_page_content, fetch_html],
+                tools=[
+                    PythonREPLTool(),
+                    internet_search,
+                    fetch_page_content,
+                    fetch_html,
+                ],
                 system_prompt=system_prompt,
                 backend=backend,
                 subagents=subagents,
@@ -133,55 +144,19 @@ IMPORTANT: Each column description is a strict instruction for how to populate t
             for chunk in agent.stream(
                 {"messages": [HumanMessage(content=initial_message)]},
                 config={"configurable": {"thread_id": "data_proc_session"}},
-                stream_mode="values",
+                stream_mode="updates",
             ):
-                message_log = chunk.get("messages", [])
-                for msg in message_log:
-                    msg_id = msg.get("id") if isinstance(msg, dict) else getattr(msg, "id", None)
-                    if msg_id is not None:
-                        msg_id = str(msg_id)
-                        if msg_id in seen_message_ids:
-                            continue
-                        seen_message_ids.add(msg_id)
-
-                    role = msg.get("role", msg.get("type", "unknown")) if isinstance(msg, dict) else getattr(msg, "type", "unknown")
-                    msg_name = msg.get("name", "unknown") if isinstance(msg, dict) else getattr(msg, "name", "unknown")
-                    content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
-                    tool_calls = msg.get("tool_calls", []) if isinstance(msg, dict) else getattr(msg, "tool_calls", [])
-
-                    if isinstance(content, list):
-                        text_parts: List[str] = []
-                        for item in content:
-                            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                                text_parts.append(item["text"])
-                            else:
-                                text_parts.append(str(item))
-                        content_text = "\n".join([part for part in text_parts if part])
-                    elif content is None:
-                        content_text = ""
-                    else:
-                        content_text = str(content)
-
-                    if role == "tool":
-                        message_log.append({"role": "tool", "type": "tool", "display": str(msg_name)})
-                        logger.info("tool: {}", msg_name)
-                        continue
-
-                    if content_text.strip():
-                        message_log.append({"role": str(role), "type": "text", "display": content_text.strip()})
-                        logger.info("{}: {}", role, content_text.strip()[:120])
-                        continue
-
-                    tool_names = [str(tc.get("name", "unknown")) if isinstance(tc, dict) else str(getattr(tc, "name", "unknown")) for tc in tool_calls or []]
-                    if tool_names:
-                        display = ", ".join(tool_names)
-                        message_log.append({"role": str(role), "type": "tool_call", "display": display})
-                        logger.info("{} tool_calls: {}", role, display)
+                logger.info("Received chunk: {}", chunk)
 
             output_path = Path(workspace_root) / "output.csv"
             if not output_path.exists():
-                logger.error("output.csv not found. Workspace files: {}", sorted(os.listdir(workspace_root)))
-                raise RuntimeError("Agent failed to produce 'output.csv'. Please check the agent's logic and inputs.")
+                logger.error(
+                    "output.csv not found. Workspace files: {}",
+                    sorted(os.listdir(workspace_root)),
+                )
+                raise RuntimeError(
+                    "Agent failed to produce 'output.csv'. Please check the agent's logic and inputs."
+                )
 
             result_df = pd.read_csv(output_path)
             logger.info(
