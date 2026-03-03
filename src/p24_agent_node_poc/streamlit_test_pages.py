@@ -253,7 +253,6 @@ def render_test_case_page(case_key: str) -> None:
                     else None,
                     model_name=model_name,
                 )
-                st.write(messages)
             except Exception as exc:
                 st.error(f"Agent run failed: {exc}")
                 raise

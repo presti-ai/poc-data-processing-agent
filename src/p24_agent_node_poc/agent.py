@@ -177,7 +177,7 @@ IMPORTANT: Each column description is a strict instruction for how to populate t
                         message: ToolMessage
                         if message.content:
                             logger.info(
-                                "Tool {} - {}", message.name, str(message.content)[:50]
+                                "Tool {} - {}...", message.name, str(message.content)[:50]
                             )
 
             output_path = Path(workspace_root) / "output.csv"
