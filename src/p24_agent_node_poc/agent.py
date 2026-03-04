@@ -29,7 +29,7 @@ def process_data(
     input_files: Sequence[Path | str],
     output_columns: List[Dict[str, str]],
     additional_instructions: Optional[str] = None,
-    model_name: str = "google_genai:gemini-3-flash-preview",
+    model_name: str = "google_genai:gemini-3-pro-preview",
 ) -> tuple[pd.DataFrame, List[Dict[str, str]]]:
     logger.info("Starting data processing task")
     resolved_input_files: List[Path] = []
@@ -89,6 +89,7 @@ General instructions:
 - Keep tool-use explanations brief and practical.
 - Use write_todos to track next actions when task complexity is high.
 - Ensure 'output.csv' contains the required columns and is saved before ending.
+- Before sending the final 'output.csv', ensure all urls in the file exist and are accessible (i.e. not 404).
 
 Web fetching delegation policy (mandatory):
 - When you have to retrieve information from similar urls, delegate the task to subagents. Only do the fetching once to ensure its feasibility. 

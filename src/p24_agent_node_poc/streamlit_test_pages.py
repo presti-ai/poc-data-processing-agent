@@ -83,11 +83,7 @@ def render_manual_page() -> None:
 
     with st.sidebar:
         st.header("Configuration")
-        model_name = st.text_input(
-            "Model name",
-            value="google_genai:gemini-3-flash-preview",
-            key="manual_model_name",
-        )
+        model_name = "google_genai:gemini-3-pro-preview"
 
     st.subheader("Input files")
     uploaded_files = st.file_uploader(
@@ -203,11 +199,7 @@ def render_test_case_page(case_key: str) -> None:
 
     with st.sidebar:
         st.header("Run configuration")
-        model_name = st.text_input(
-            "Model name",
-            value="google_genai:gemini-3-flash-preview",
-            key=f"{state_prefix}_model",
-        )
+        model_name = "google_genai:gemini-3-pro-preview"
         variant = st.radio(
             "Scenario",
             options=["small", "large"],
