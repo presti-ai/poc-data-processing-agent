@@ -16,6 +16,7 @@ st.markdown("- `04 UC3 Product Multi Images`")
 st.markdown("- `05 UC4 Match Tables Chairs`")
 st.markdown("- `06 UC5 Complementary Products`")
 st.markdown("- `07 UC6 Inspiration Lifestyle Images`")
+st.markdown("- `08 CSV Image Viewer`: upload a CSV and render image URL columns as images.")
 
 st.subheader("Notes")
 st.markdown("- Each dedicated test-case page shows input datasets, output schema, run button, and output table.")
