@@ -512,3 +512,113 @@ def render_uc2_page() -> None:
         _render_message_panel(
             {"messages": st.session_state.get(f"{state_prefix}_phase1_messages", [])}
         )
+
+
+MAX_UPLOAD_ROWS = 20
+
+
+def render_upload_test_case_page(case_key: str, max_rows: int = MAX_UPLOAD_ROWS) -> None:
+    """
+    Upload-based test page: user uploads CSV(s), validated to max_rows.
+    Uses config defaults (output_columns, additional_instructions). Single run.
+    """
+    config = TEST_CASES[case_key]
+    state_prefix = f"upload_{case_key}_state"
+    file_specs = config.variants["small"].files  # Labels from small variant
+
+    st.title(config.title)
+    st.write(config.description)
+    st.caption(f"Upload your CSV file(s). Maximum {max_rows} rows per file.")
+
+    with st.sidebar:
+        st.header("Run configuration")
+        model_name = "google_genai:gemini-3-pro-preview"
+
+    # File uploaders
+    uploaded_data: List[tuple[str, object, pd.DataFrame]] = []  # (label, file, df)
+    for i, spec in enumerate(file_specs):
+        up = st.file_uploader(
+            spec.label,
+            type=["csv"],
+            key=f"{state_prefix}_upload_{i}",
+        )
+        if up:
+            try:
+                df = pd.read_csv(up)
+                uploaded_data.append((spec.label, up, df))
+                with st.expander(f"{spec.label} ({len(df)} rows)", expanded=False):
+                    st.dataframe(df)
+            except Exception as e:
+                st.error(f"Could not read {spec.label} as CSV: {e}")
+
+    st.subheader("Target output schema")
+    st.dataframe(pd.DataFrame(config.output_columns))
+
+    use_additional_instructions = st.toggle(
+        "Send additional instructions",
+        value=False,
+        key=f"{state_prefix}_use_instructions",
+    )
+    additional_instructions = st.text_area(
+        "Additional instructions",
+        value=config.additional_instructions,
+        key=f"{state_prefix}_instructions",
+        height=120,
+        disabled=not use_additional_instructions,
+    )
+    effective_instructions = (
+        (additional_instructions or config.additional_instructions)
+        if use_additional_instructions
+        else config.additional_instructions
+    )
+
+    run_clicked = st.button("Run this test case", type="primary", key=f"{state_prefix}_run")
+    if run_clicked:
+        if len(uploaded_data) != len(file_specs):
+            st.error(
+                f"Please upload {len(file_specs)} file(s): "
+                + ", ".join(s.label for s in file_specs)
+            )
+        else:
+            # Validate row count
+            for label, up, df in uploaded_data:
+                if len(df) > max_rows:
+                    st.error(
+                        f"{label}: {len(df)} rows. Maximum allowed is {max_rows} rows."
+                    )
+                    run_clicked = False
+                    break
+            else:
+                with tempfile.TemporaryDirectory() as tmp:
+                    paths = [Path(tmp) / f"input_{i}.csv" for i in range(len(uploaded_data))]
+                    for (_, up, _), p in zip(uploaded_data, paths):
+                        up.seek(0)
+                        p.write_bytes(up.getvalue())
+                    with st.spinner("Running agent... this may take a few minutes."):
+                        try:
+                            result_df, messages = process_data(
+                                input_files=paths,
+                                output_columns=config.output_columns,
+                                additional_instructions=effective_instructions,
+                                model_name=model_name,
+                            )
+                            st.session_state[f"{state_prefix}_result_df"] = result_df
+                            st.session_state[f"{state_prefix}_messages"] = messages
+                        except Exception as exc:
+                            st.error(f"Agent run failed: {exc}")
+                            raise
+
+    if f"{state_prefix}_result_df" in st.session_state:
+        result_df = st.session_state[f"{state_prefix}_result_df"]
+        st.success("Agent run completed.")
+        st.subheader("Output")
+        st.dataframe(result_df)
+        st.download_button(
+            label="Download output CSV",
+            data=result_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"{case_key}_upload_output.csv",
+            mime="text/csv",
+            key=f"{state_prefix}_download",
+        )
+
+    _render_message_panel(st.session_state.get(f"{state_prefix}_messages", []))
