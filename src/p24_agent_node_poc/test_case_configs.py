@@ -1,3 +1,10 @@
+"""
+Test case definitions for the 6 predefined use cases.
+
+Each TestCaseConfig defines: input files (small/large variants), output columns,
+and instructions. Used by the Streamlit pages to load inputs and run the agent.
+"""
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -7,28 +14,31 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class InputFileSpec:
+    """Single input file: display label + path relative to project root."""
     label: str
     relative_path: str
 
 
 @dataclass(frozen=True)
 class VariantSpec:
+    """One variant (e.g. small or large): tuple of input files."""
     files: Tuple[InputFileSpec, ...]
 
 
 @dataclass(frozen=True)
 class TestCaseConfig:
+    """Full config for one use case: schema, instructions, small/large variants."""
     key: str
     title: str
     description: str
-    output_columns: List[Dict[str, str]]
+    output_columns: List[Dict[str, str]]  # name + description per column
     additional_instructions: str
-    variants: Dict[str, VariantSpec]
+    variants: Dict[str, VariantSpec]  # "small" | "large" -> InputFileSpecs
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # Project root (parent of src/)
 
-
+# All 6 use cases: UC1 normalize URLs, UC2 packshot, UC3 multi-images, etc.
 TEST_CASES: Dict[str, TestCaseConfig] = {
     "uc1_normalize_urls": TestCaseConfig(
         key="uc1_normalize_urls",
@@ -260,6 +270,7 @@ TEST_CASES: Dict[str, TestCaseConfig] = {
 
 
 def load_variant_input_files(case_key: str, variant_key: str) -> List[tuple[str, Path, pd.DataFrame]]:
+    """Load CSVs for a use case variant. Returns list of (label, path, dataframe)."""
     config = TEST_CASES[case_key]
     variant = config.variants[variant_key]
     loaded: List[tuple[str, Path, pd.DataFrame]] = []
