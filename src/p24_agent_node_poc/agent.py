@@ -55,11 +55,13 @@ def process_data(
     output_columns: List[Dict[str, str]],
     additional_instructions: Optional[str] = None,
     example_output_path: Optional[Path | str] = None,
-    model_name: str = "anthropic:claude-sonnet-4-6"#"google_genai:gemini-3-pro-preview",
+    model_name: str = "anthropic:claude-sonnet-4-6",  # alt: google_genai:gemini-3-pro-preview
+    save_output_dir: Optional[Path | str] = None,
 ) -> tuple[pd.DataFrame, List[Dict[str, str]]]:
     """
     Main entry point: process input CSVs and produce output.csv with the requested columns.
     Optionally accepts a validated_sample.csv (example_output_path) to guide the agent.
+    When save_output_dir is None, saves output to data/output/ with a timestamped filename.
     """
     logger.info("Starting data processing task")
 
@@ -93,6 +95,7 @@ def process_data(
             _debug_log(
                 debug_file,
                 f"RUN START @ {datetime.now().isoformat()}",
+                f"model={model_name}\n"
                 f"input_files={[str(p) for p in resolved_input_files]}\n"
                 f"example_output_path={example_output_path}\n"
                 f"workspace={workspace_root}",
@@ -312,11 +315,20 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                 len(result_df.columns),
                 len(message_log),
             )
+
+            # Save output to output folder with a timestamped filename
+            out_dir = Path(save_output_dir).expanduser().resolve() if save_output_dir else Path(original_cwd) / "data" / "output"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            saved_path = out_dir / f"output_{timestamp}.csv"
+            result_df.to_csv(saved_path, index=False)
+            logger.info("Output saved to {}", saved_path)
+
             if debug_file:
                 _debug_log(
                     debug_file,
                     "RUN COMPLETE",
-                    f"rows={len(result_df)}, cols={len(result_df.columns)}, messages={len(message_log)}",
+                    f"rows={len(result_df)}, cols={len(result_df.columns)}, messages={len(message_log)}, saved_to={saved_path}",
                     truncate=False,
                 )
             return result_df, message_log
