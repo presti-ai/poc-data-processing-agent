@@ -33,3 +33,6 @@ htmlcov/
 # Streamlit
 .streamlit/
 
+# Debug logs (generated during agent runs)
+log.txt
+

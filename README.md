@@ -48,4 +48,16 @@ A powerful data processing agent proof-of-concept that combines LLMs with Python
 - `src/p24_agent_node_poc/tools.py`: Custom tools for search and web fetching.
 - `data/test_cases/`: Test datasets for each use case (`small` + `100-row` scenarios).
 
+## 📋 Debug Logging
+
+When running the agent (CLI or Streamlit), a `log.txt` file is created in the working directory. It captures:
+- Full system prompt and initial message
+- Workspace path and copied files
+- Main agent AI messages (reasoning)
+- Tool calls with arguments
+- Tool results (truncated if very long)
+- Tool invocations from `tools.py` (Fetch_page_content, Fetch_HTML_from_URL, Internet_search)
+
+Use it to debug agent behavior, understand what the main agent is doing, and trace subagent delegations.
+
 Built with ❤️ for efficient data automation.

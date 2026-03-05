@@ -5,7 +5,7 @@ st.set_page_config(page_title="P24 Agent Test Bench", layout="wide")
 st.title("P24 Agent Test Bench")
 st.write(
     "Use the sidebar pages to run the six predefined test cases or the manual page. "
-    "Each test case includes a small debug dataset and a 100-row dataset."
+    "Each test case includes a small debug dataset, a 20-row medium set, and a 100-row large dataset."
 )
 
 st.subheader("Available pages")

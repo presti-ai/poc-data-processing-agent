@@ -99,7 +99,7 @@ def render_manual_page() -> None:
 
     with st.sidebar:
         st.header("Configuration")
-        model_name = "google_genai:gemini-3-pro-preview"
+        model_name = "anthropic:claude-sonnet-4-6" #"google_genai:gemini-3-pro-preview"
 
     st.subheader("Input files")
     uploaded_files = st.file_uploader(
@@ -221,14 +221,16 @@ def render_test_case_page(case_key: str) -> None:
         model_name = "google_genai:gemini-3-pro-preview"
         variant = st.radio(
             "Scenario",
-            options=["small", "large"],
-            format_func=lambda value: "Small debug set"
-            if value == "small"
-            else "Large batch (100 rows)",
+            options=["small", "medium", "large"],
+            format_func=lambda v: {
+                "small": "Small debug set",
+                "medium": "Medium (20 rows)",
+                "large": "Large batch (100 rows)",
+            }.get(v, v),
             key=f"{state_prefix}_variant",
         )
 
-    loaded_inputs = load_variant_input_files(case_key, variant)  # small or large CSVs
+    loaded_inputs = load_variant_input_files(case_key, variant)
 
     st.subheader("Inputs")
     for label, path, df in loaded_inputs:
@@ -303,10 +305,12 @@ def render_uc2_page() -> None:
         model_name = "google_genai:gemini-3-pro-preview"
         variant = st.radio(
             "Scenario",
-            options=["small", "large"],
-            format_func=lambda value: "Small debug set"
-            if value == "small"
-            else "Large batch (100 rows) - two-phase scaling",
+            options=["small", "medium", "large"],
+            format_func=lambda v: {
+                "small": "Small debug set",
+                "medium": "Medium (20 rows)",
+                "large": "Large batch (100 rows) - two-phase scaling",
+            }.get(v, v),
             key=f"{state_prefix}_variant",
         )
 
@@ -333,8 +337,8 @@ def render_uc2_page() -> None:
         disabled=not use_additional_instructions,
     )
 
-    # Small: same as generic test case (single run)
-    if variant == "small":
+    # Small and medium: single run (no two-phase)
+    if variant in ("small", "medium"):
         run_clicked = st.button(
             "Run this test case", type="primary", key=f"{state_prefix}_run"
         )

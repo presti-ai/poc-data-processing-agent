@@ -5,11 +5,13 @@ Creates an isolated workspace, copies input files, invokes the deep agent with
 tools (Python REPL, web search, page fetching), and returns the produced output.csv.
 """
 
+import json
 import os
 import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, TextIO
 
 import pandas as pd
 from deepagents import SubAgent, create_deep_agent
@@ -31,13 +33,29 @@ load_dotenv()  # Load API keys from .env (TAVILY_API_KEY, etc.)
 
 URL_DELEGATION_THRESHOLD = 10  # Threshold for delegating URL fetching to subagents
 
+# Debug log: truncate very long content to avoid huge files
+DEBUG_LOG_TRUNCATE = 8000  # chars for tool results, page content, etc.
+DEBUG_LOG_PATH = Path("log.txt")
+
+
+def _debug_log(f: TextIO, section: str, content: Any, truncate: bool = True) -> None:
+    """Write a section to the debug log file."""
+    if isinstance(content, dict):
+        content = json.dumps(content, indent=2, default=str)
+    elif not isinstance(content, str):
+        content = str(content)
+    if truncate and len(content) > DEBUG_LOG_TRUNCATE:
+        content = content[:DEBUG_LOG_TRUNCATE] + f"\n... [TRUNCATED, total {len(content)} chars]"
+    f.write(f"\n{'='*60}\n{section}\n{'='*60}\n{content}\n")
+    f.flush()
+
 
 def process_data(
     input_files: Sequence[Path | str],
     output_columns: List[Dict[str, str]],
     additional_instructions: Optional[str] = None,
     example_output_path: Optional[Path | str] = None,
-    model_name: str = "google_genai:gemini-3-pro-preview",
+    model_name: str = "anthropic:claude-sonnet-4-6"#"google_genai:gemini-3-pro-preview",
 ) -> tuple[pd.DataFrame, List[Dict[str, str]]]:
     """
     Main entry point: process input CSVs and produce output.csv with the requested columns.
@@ -60,6 +78,28 @@ def process_data(
     with tempfile.TemporaryDirectory() as workspace_root:
         original_cwd = os.getcwd()
         os.chdir(workspace_root)  # Agent runs in workspace so paths resolve correctly
+
+        # Open debug log file (append mode so multi-run / two-phase runs accumulate)
+        log_path = Path(original_cwd) / DEBUG_LOG_PATH
+        debug_file: Optional[TextIO] = None
+        loguru_sink_id: Optional[int] = None
+        try:
+            debug_file = open(log_path, "a", encoding="utf-8")
+            loguru_sink_id = logger.add(
+                log_path,
+                mode="a",
+                format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+            )
+            _debug_log(
+                debug_file,
+                f"RUN START @ {datetime.now().isoformat()}",
+                f"input_files={[str(p) for p in resolved_input_files]}\n"
+                f"example_output_path={example_output_path}\n"
+                f"workspace={workspace_root}",
+                truncate=False,
+            )
+        except OSError as e:
+            logger.warning("Could not open debug log file: {}", e)
 
         try:
             copied_files: List[str] = []
@@ -154,6 +194,12 @@ Use it as a strict reference for column format, extraction logic, and URL struct
 
             logger.info("Workspace ready with {} file(s)", len(copied_files))
 
+            # Write full prompts and workspace info to debug log
+            if debug_file:
+                _debug_log(debug_file, "COPIED FILES IN WORKSPACE", copied_files, truncate=False)
+                _debug_log(debug_file, "SYSTEM PROMPT (sent to main agent)", system_prompt, truncate=False)
+                _debug_log(debug_file, "INITIAL MESSAGE (sent to main agent)", initial_message, truncate=False)
+
             # DeepAgents: main agent + subagent for URL batch fetching (reduces context size)
             backend = FilesystemBackend(root_dir=workspace_root, virtual_mode=False)
             subagents = [
@@ -190,35 +236,62 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                 stream_mode=["updates", "values"],
             ):
                 # "values" = full state snapshot; "updates" = incremental model/tool output
-                if stream_mode == "values":
+                # stream_mode can be a tuple for namespaced events (e.g. subagent streams)
+                if stream_mode == "values" or stream_mode == ("values",):
                     message_log = chunk  # Keep latest state for UI display
                     continue
+
+                if debug_file and stream_mode not in ("updates", ("updates",)):
+                    _debug_log(
+                        debug_file,
+                        f"STREAM MODE (may indicate subagent): {stream_mode}",
+                        list(chunk.keys()) if isinstance(chunk, dict) else str(chunk)[:500],
+                        truncate=False,
+                    )
 
                 # Log model reasoning and tool calls for debugging/transparency
                 if not chunk.get("model") and not chunk.get("tools"):
                     logger.debug("Received chunk: {}", chunk)
+                    if debug_file and chunk:
+                        _debug_log(
+                            debug_file,
+                            "STREAM CHUNK (other)",
+                            {k: str(v)[:500] for k, v in chunk.items()},
+                            truncate=False,
+                        )
 
                 if model_chunk := chunk.get("model"):
-                    for message in model_chunk.get("messages", []):
-                        message: AIMessage
-                        if message.content:
-                            if isinstance(message.content, str):
-                                logger.info("Model - {}", message.content)
-                            elif (
-                                isinstance(message.content, list)
-                                and message.content[0]["type"] == "text"
-                            ):
-                                logger.info("Model - {}", message.content[0]["text"])
-                        if message.tool_calls:
-                            for tool_call in message.tool_calls:
-                                tool_call: dict
-                                logger.info("Model - Tool call: {}", tool_call["name"])
+                    for msg in model_chunk.get("messages", []):
+                        msg: AIMessage
+                        if msg.content:
+                            text = msg.content if isinstance(msg.content, str) else (
+                                msg.content[0].get("text", str(msg.content)) if msg.content else ""
+                            )
+                            logger.info("Model - {}", text[:100] + "..." if len(str(text)) > 100 else text)
+                            if debug_file:
+                                _debug_log(debug_file, "MAIN AGENT (AI message)", text)
+                        if msg.tool_calls:
+                            for tc in msg.tool_calls:
+                                tc: dict
+                                logger.info("Model - Tool call: {}", tc.get("name", "?"))
+                                if debug_file:
+                                    _debug_log(
+                                        debug_file,
+                                        f"MAIN AGENT -> TOOL CALL: {tc.get('name', '?')}",
+                                        {"args": tc.get("args", {}), "id": tc.get("id")},
+                                        truncate=False,
+                                    )
                 if tool_chunk := chunk.get("tools"):
-                    for message in tool_chunk.get("messages", []):
-                        message: ToolMessage
-                        if message.content:
-                            logger.info(
-                                "Tool {} - {}...", message.name, str(message.content)[:50]
+                    for msg in tool_chunk.get("messages", []):
+                        msg: ToolMessage
+                        logger.info(
+                            "Tool {} - {}...", msg.name, str(msg.content)[:50]
+                        )
+                        if debug_file:
+                            _debug_log(
+                                debug_file,
+                                f"TOOL RESULT: {msg.name}",
+                                msg.content,
                             )
 
             # Agent must produce output.csv; fail if missing
@@ -239,8 +312,25 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                 len(result_df.columns),
                 len(message_log),
             )
+            if debug_file:
+                _debug_log(
+                    debug_file,
+                    "RUN COMPLETE",
+                    f"rows={len(result_df)}, cols={len(result_df.columns)}, messages={len(message_log)}",
+                    truncate=False,
+                )
             return result_df, message_log
         finally:
+            if loguru_sink_id is not None:
+                try:
+                    logger.remove(loguru_sink_id)
+                except ValueError:
+                    pass
+            if debug_file:
+                try:
+                    debug_file.close()
+                except OSError:
+                    pass
             os.chdir(original_cwd)  # Restore cwd even on error
 
 

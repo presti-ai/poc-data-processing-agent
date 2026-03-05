@@ -71,6 +71,11 @@ TEST_CASES: Dict[str, TestCaseConfig] = {
                     InputFileSpec("Input dataset", "data/test_cases/uc1_normalize_urls/small_input.csv"),
                 )
             ),
+            "medium": VariantSpec(
+                files=(
+                    InputFileSpec("Input dataset", "data/test_cases/uc1_normalize_urls/medium_input.csv"),
+                )
+            ),
             "large": VariantSpec(
                 files=(
                     InputFileSpec("Input dataset", "data/test_cases/uc1_normalize_urls/large_input.csv"),
@@ -103,6 +108,11 @@ TEST_CASES: Dict[str, TestCaseConfig] = {
             "small": VariantSpec(
                 files=(
                     InputFileSpec("Input dataset", "data/test_cases/uc2_packshot_dimensions/small_input.csv"),
+                )
+            ),
+            "medium": VariantSpec(
+                files=(
+                    InputFileSpec("Input dataset", "data/test_cases/uc2_packshot_dimensions/medium_input.csv"),
                 )
             ),
             "large": VariantSpec(
@@ -138,6 +148,11 @@ TEST_CASES: Dict[str, TestCaseConfig] = {
                     InputFileSpec("Input dataset", "data/test_cases/uc3_product_multi_images/small_input.csv"),
                 )
             ),
+            "medium": VariantSpec(
+                files=(
+                    InputFileSpec("Input dataset", "data/test_cases/uc3_product_multi_images/medium_input.csv"),
+                )
+            ),
             "large": VariantSpec(
                 files=(
                     InputFileSpec("Input dataset", "data/test_cases/uc3_product_multi_images/large_input.csv"),
@@ -170,6 +185,12 @@ TEST_CASES: Dict[str, TestCaseConfig] = {
                 files=(
                     InputFileSpec("Tables dataset", "data/test_cases/uc4_match_tables_chairs/small_tables.csv"),
                     InputFileSpec("Chairs dataset", "data/test_cases/uc4_match_tables_chairs/small_chairs.csv"),
+                )
+            ),
+            "medium": VariantSpec(
+                files=(
+                    InputFileSpec("Tables dataset", "data/test_cases/uc4_match_tables_chairs/medium_tables.csv"),
+                    InputFileSpec("Chairs dataset", "data/test_cases/uc4_match_tables_chairs/medium_chairs.csv"),
                 )
             ),
             "large": VariantSpec(
@@ -222,6 +243,11 @@ TEST_CASES: Dict[str, TestCaseConfig] = {
                     InputFileSpec("Input dataset", "data/test_cases/uc5_complementary_products/small_input.csv"),
                 )
             ),
+            "medium": VariantSpec(
+                files=(
+                    InputFileSpec("Input dataset", "data/test_cases/uc5_complementary_products/medium_input.csv"),
+                )
+            ),
             "large": VariantSpec(
                 files=(
                     InputFileSpec("Input dataset", "data/test_cases/uc5_complementary_products/large_input.csv"),
@@ -257,6 +283,11 @@ TEST_CASES: Dict[str, TestCaseConfig] = {
             "small": VariantSpec(
                 files=(
                     InputFileSpec("Input dataset", "data/test_cases/uc6_inspiration_lifestyle_images/small_input.csv"),
+                )
+            ),
+            "medium": VariantSpec(
+                files=(
+                    InputFileSpec("Input dataset", "data/test_cases/uc6_inspiration_lifestyle_images/medium_input.csv"),
                 )
             ),
             "large": VariantSpec(

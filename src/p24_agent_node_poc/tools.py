@@ -31,17 +31,22 @@ def internet_search(
     include_raw_content: bool = False,
 ):
     """Run a web search using Tavily."""
-    return tavily_client.search(
+    logger.info("Internet_search invoked: query={} max_results={}", query[:100], max_results)
+    result = tavily_client.search(
         query,
         max_results=max_results,
         include_raw_content=include_raw_content,
         topic=topic,
     )
+    n_results = len(result.get("results", [])) if isinstance(result, dict) else 0
+    logger.info("Internet_search success: {} results", n_results)
+    return result
 
 
 @tool("Fetch_page_content")
 def fetch_page_content(url: str) -> str:
     """Fetch cleaned page content via Jina Reader (returns readable text, not raw HTML)."""
+    logger.info("Fetch_page_content invoked: url={}", url[:80] + "..." if len(url) > 80 else url)
     if not url.startswith("http://") and not url.startswith("https://"):
         return f"Invalid URL (must start with http:// or https://): {url}"
     # Jina Reader: GET https://r.jina.ai/{url} returns cleaned text
@@ -57,6 +62,7 @@ def fetch_page_content(url: str) -> str:
     if not resp.ok:
         snippet = resp.text[:500]
         return f"Jina Reader returned {resp.status_code}: {snippet}"
+    logger.info("Fetch_page_content success: {} chars", len(resp.text))
     return resp.text
 
 
@@ -94,6 +100,7 @@ def fetch_html(url: str) -> str:
     if not resp.ok:
         snippet = resp.text[:500]
         return f"Request returned {resp.status_code}: {snippet}"
+    logger.info("Fetch_HTML_from_URL success: {} chars", len(resp.text))
     return resp.text
 
 
