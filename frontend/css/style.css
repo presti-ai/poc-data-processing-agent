@@ -234,3 +234,52 @@ button:disabled {
 #outputTableWrap th {
     background: #f0f0f0;
 }
+
+.upload-status {
+    margin-top: 0.5rem;
+    font-size: 0.875rem;
+}
+.upload-status.upload-success { color: #0a6b0a; }
+.upload-status.upload-error { color: #c00; }
+
+.history-list {
+    max-height: 300px;
+    overflow-y: auto;
+}
+.history-entry {
+    margin-bottom: 0.75rem;
+    padding: 0.5rem;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+.history-files {
+    margin-top: 0.5rem;
+    padding-left: 1rem;
+}
+.history-file {
+    display: block;
+    margin: 0.25rem 0;
+    font-size: 0.875rem;
+}
+
+.outputs-list {
+    max-height: 200px;
+    overflow-y: auto;
+}
+.output-entry {
+    margin-bottom: 0.5rem;
+    padding: 0.5rem;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 0.875rem;
+}
+.output-entry a {
+    color: #0066cc;
+    text-decoration: none;
+}
+.output-entry a:hover {
+    text-decoration: underline;
+}
+

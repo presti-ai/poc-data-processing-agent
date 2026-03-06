@@ -28,7 +28,32 @@
             <p>Upload files, define the output schema, and run the agent.</p>
 
             <section class="section">
+                <h2>Upload to storage</h2>
+                <p class="hint">Upload .zip files (containing images, PDFs, CSV) or individual files. Files are stored in Google Cloud Storage.</p>
+                <input type="file" id="storageFileInput" accept=".zip,.csv,.xlsx,.xls,.txt,.pdf,.png,.jpg,.jpeg,.gif,.webp">
+                <button type="button" id="uploadToGcsBtn" class="primary">Upload to GCS</button>
+                <div id="uploadStatus" class="upload-status"></div>
+            </section>
+
+            <section class="section">
+                <h2>Upload history</h2>
+                <p class="hint">Previously uploaded files. Select CSV/Excel files to use when running the agent.</p>
+                <div id="historyList" class="history-list">
+                    <p class="info">Loading history...</p>
+                </div>
+            </section>
+
+            <section class="section">
+                <h2>Previous outputs</h2>
+                <p class="hint">Agent run results saved to data/output/. Click to download.</p>
+                <div id="outputsList" class="outputs-list">
+                    <p class="info">Loading outputs...</p>
+                </div>
+            </section>
+
+            <section class="section">
                 <h2>Input files</h2>
+                <p class="hint">Upload files directly, or select from history above.</p>
                 <input type="file" id="fileInput" multiple accept=".csv,.xlsx,.xls,.txt">
                 <div id="fileList" class="file-list"></div>
             </section>

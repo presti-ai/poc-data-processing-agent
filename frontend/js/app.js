@@ -14,6 +14,8 @@ const SUBAGENT_OPTIONS = [
   "anthropic:claude-sonnet-4-6",
 ];
 
+const AGENT_EXTENSIONS = [".csv", ".xlsx", ".xls", ".txt"];
+
 let schemaRows = [];
 
 function init() {
@@ -23,6 +25,9 @@ function init() {
   document.getElementById("removeColumn").addEventListener("click", removeColumn);
   document.getElementById("runButton").addEventListener("click", runAgent);
   document.getElementById("useInstructions").addEventListener("change", toggleInstructions);
+  document.getElementById("uploadToGcsBtn").addEventListener("click", uploadToGCS);
+  loadHistory();
+  loadOutputs();
 }
 
 function renderModelSelectors() {
@@ -169,11 +174,113 @@ function showError(msg) {
   panel.appendChild(div);
 }
 
+function isAgentCompatible(filename) {
+  const idx = filename.lastIndexOf(".");
+  if (idx < 0) return false;
+  const ext = filename.slice(idx).toLowerCase();
+  return AGENT_EXTENSIONS.includes(ext);
+}
+
+async function uploadToGCS() {
+  const input = document.getElementById("storageFileInput");
+  const statusEl = document.getElementById("uploadStatus");
+  if (!input.files || input.files.length === 0) {
+    statusEl.textContent = "Please select a file to upload.";
+    statusEl.className = "upload-status upload-error";
+    return;
+  }
+  statusEl.textContent = "Uploading...";
+  statusEl.className = "upload-status";
+  const formData = new FormData();
+  formData.append("file", input.files[0]);
+  try {
+    const res = await fetch("/api/upload", { method: "POST", body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      statusEl.textContent = data.error || "Upload failed.";
+      statusEl.className = "upload-status upload-error";
+      return;
+    }
+    statusEl.textContent = `Uploaded: ${data.source} (${data.files?.length || 0} files)`;
+    statusEl.className = "upload-status upload-success";
+    input.value = "";
+    loadHistory();
+  } catch (e) {
+    statusEl.textContent = e.message || "Upload failed.";
+    statusEl.className = "upload-status upload-error";
+  }
+}
+
+async function loadHistory() {
+  const listEl = document.getElementById("historyList");
+  listEl.innerHTML = "<p class=\"info\">Loading...</p>";
+  try {
+    const res = await fetch("/api/history");
+    const data = await res.json();
+    const history = data.history || (Array.isArray(data) ? data : []);
+    if (history.length === 0) {
+      listEl.innerHTML = "<p class=\"info\">No uploads yet. Upload files above.</p>";
+      return;
+    }
+    let html = "";
+    for (const entry of history) {
+      const ts = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "—";
+      const files = entry.files || [];
+      const agentFiles = files.filter((f) => isAgentCompatible(f.name || ""));
+      html += `<div class="history-entry"><details><summary>${escapeHtml(entry.source || "upload")} — ${ts} (${files.length} files)</summary>`;
+      html += "<div class=\"history-files\">";
+      for (const f of files) {
+        const canUse = isAgentCompatible(f.name || "");
+        const gcsUri = f.gcs_uri || "";
+        html += `<label class="history-file"><input type="checkbox" data-gcs-uri="${escapeHtml(gcsUri)}" ${!canUse ? "disabled" : ""}> ${escapeHtml(f.name)}${!canUse ? " (not for agent)" : ""}</label>`;
+      }
+      html += "</div></details></div>";
+    }
+    listEl.innerHTML = html;
+  } catch (e) {
+    listEl.innerHTML = `<p class=\"info\">Failed to load history: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function loadOutputs() {
+  const listEl = document.getElementById("outputsList");
+  listEl.innerHTML = "<p class=\"info\">Loading...</p>";
+  try {
+    const res = await fetch("/api/outputs");
+    const data = await res.json();
+    const outputs = data.outputs || [];
+    if (outputs.length === 0) {
+      listEl.innerHTML = "<p class=\"info\">No outputs yet. Run the agent to generate outputs.</p>";
+      return;
+    }
+    let html = "";
+    for (const o of outputs) {
+      const ts = o.modified ? new Date(o.modified * 1000).toLocaleString() : "—";
+      const sizeKb = o.size ? (o.size / 1024).toFixed(1) : "—";
+      const url = `/api/outputs/${encodeURIComponent(o.filename)}`;
+      html += `<div class="output-entry"><a href="${url}" download="${escapeHtml(o.filename)}">${escapeHtml(o.filename)}</a> — ${ts} (${sizeKb} KB)</div>`;
+    }
+    listEl.innerHTML = html;
+  } catch (e) {
+    listEl.innerHTML = `<p class=\"info\">Failed to load outputs: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function getSelectedHistoryGcsUris() {
+  const uris = [];
+  document.querySelectorAll("#historyList input[type=checkbox]:checked").forEach((cb) => {
+    const uri = cb.dataset.gcsUri;
+    if (uri) uris.push(uri);
+  });
+  return uris;
+}
+
 async function runAgent() {
   const fileInput = document.getElementById("fileInput");
   const files = fileInput.files;
-  if (!files || files.length === 0) {
-    alert("Please upload at least one file.");
+  const historyUris = getSelectedHistoryGcsUris();
+  if ((!files || files.length === 0) && historyUris.length === 0) {
+    alert("Please upload at least one file or select files from history.");
     return;
   }
 
@@ -186,9 +293,10 @@ async function runAgent() {
   const subagentModelName = document.getElementById("subagentModelName").value;
 
   const formData = new FormData();
-  for (let i = 0; i < files.length; i++) {
+  for (let i = 0; i < (files?.length || 0); i++) {
     formData.append("files", files[i]);
   }
+  formData.append("history_file_ids", JSON.stringify(historyUris));
   formData.append("output_columns", JSON.stringify(outputColumns));
   formData.append("additional_instructions", additionalInstructions);
   formData.append("model_name", modelName);
@@ -264,6 +372,7 @@ async function runAgent() {
               showError(ev.error);
             } else if (ev.csv) {
               showOutput(ev.csv);
+              loadOutputs();
             }
           }
         } catch (e) {
