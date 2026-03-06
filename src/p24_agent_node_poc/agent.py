@@ -12,7 +12,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, TextIO
+from typing import Any, Callable, Dict, List, Optional, Sequence, TextIO
 
 import pandas as pd
 from deepagents import SubAgent, create_deep_agent
@@ -52,6 +52,38 @@ def _debug_log(f: TextIO, section: str, content: Any, truncate: bool = True) -> 
     f.flush()
 
 
+SSE_TRUNCATE = 2000  # chars for SSE payloads to avoid huge events
+
+
+def _serialize_chunk_for_sse(chunk: dict) -> Optional[dict]:
+    """Convert a stream chunk to JSON-serializable dict for SSE. Returns None if empty."""
+    payload: dict = {}
+    if model_chunk := chunk.get("model"):
+        msgs = model_chunk.get("messages", [])
+        valid = [m for m in msgs if isinstance(m, BaseMessage)]
+        if valid:
+            payload["model"] = messages_to_dict(valid)
+            # Truncate long content in payload
+            for m in payload.get("model", []):
+                d = m.get("data", {})
+                if "content" in d:
+                    c = d["content"]
+                    if isinstance(c, str) and len(c) > SSE_TRUNCATE:
+                        d["content"] = c[:SSE_TRUNCATE] + f"... [TRUNCATED, total {len(c)} chars]"
+    if tool_chunk := chunk.get("tools"):
+        msgs = tool_chunk.get("messages", [])
+        valid = [m for m in msgs if isinstance(m, BaseMessage)]
+        if valid:
+            payload["tools"] = messages_to_dict(valid)
+            for m in payload.get("tools", []):
+                d = m.get("data", {})
+                if "content" in d:
+                    c = d["content"]
+                    if isinstance(c, str) and len(c) > SSE_TRUNCATE:
+                        d["content"] = c[:SSE_TRUNCATE] + f"... [TRUNCATED, total {len(c)} chars]"
+    return payload if payload else None
+
+
 def process_data(
     input_files: Sequence[Path | str],
     output_columns: List[Dict[str, str]],
@@ -60,6 +92,7 @@ def process_data(
     model_name: str = "anthropic:claude-opus-4-6",
     subagent_model_name: Optional[str] = None,
     save_output_dir: Optional[Path | str] = None,
+    on_stream_chunk: Optional[Callable[[str, dict], None]] = None,
 ) -> tuple[pd.DataFrame, List[Dict[str, str]]]:
     """
     Main entry point: process input CSVs and produce output.csv with the requested columns.
@@ -276,6 +309,11 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                             message_log = chunk  # Keep latest state for UI display
                             continue
 
+                        if on_stream_chunk and stream_mode in ("updates", ("updates",)):
+                            payload = _serialize_chunk_for_sse(chunk)
+                            if payload:
+                                on_stream_chunk(str(stream_mode), payload)
+
                         if debug_file and stream_mode not in ("updates", ("updates",)):
                             _debug_log(
                                 debug_file,
@@ -328,17 +366,25 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                                         f"TOOL RESULT: {msg.name}",
                                         msg.content,
                                     )
+                        if on_stream_chunk and stream_mode in ("updates", ("updates",)):
+                            payload = _serialize_chunk_for_sse(chunk)
+                            if payload:
+                                on_stream_chunk(str(stream_mode), payload)
                     break  # Success, exit retry loop
                 except Exception as e:
                     err_str = str(e).lower()
                     if attempt < RATE_LIMIT_RETRIES - 1 and ("429" in err_str or "rate_limit" in err_str):
                         wait = RATE_LIMIT_WAIT
+                        if on_stream_chunk:
+                            on_stream_chunk("retry", {"message": f"Rate limit (429), waiting {wait}s before retry {attempt + 2}/{RATE_LIMIT_RETRIES}"})
                         logger.warning(
                             "Rate limit (429), waiting {}s before retry {}/{}",
                             wait,
                             attempt + 2,
                             RATE_LIMIT_RETRIES,
                         )
+                        if on_stream_chunk:
+                            on_stream_chunk("retry", {"message": f"Rate limit (429), waiting {wait}s before retry {attempt + 2}/{RATE_LIMIT_RETRIES}"})
                         time.sleep(wait)
                     else:
                         raise

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P24 Agent - Manual Run</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="layout">
+        <aside class="sidebar">
+            <h2>Configuration</h2>
+            <label>Main agent model</label>
+            <select id="modelName">
+                <option value="anthropic:claude-opus-4-6">anthropic:claude-opus-4-6</option>
+                <option value="anthropic:claude-sonnet-4-6">anthropic:claude-sonnet-4-6</option>
+                <option value="google_genai:gemini-3-pro-preview">google_genai:gemini-3-pro-preview</option>
+            </select>
+            <label>Subagent model</label>
+            <select id="subagentModelName">
+                <option value="openai:gpt-5.4">openai:gpt-5.4</option>
+                <option value="openai:gpt-4o">openai:gpt-4o</option>
+                <option value="anthropic:claude-sonnet-4-6">anthropic:claude-sonnet-4-6</option>
+            </select>
+        </aside>
+        <main class="content">
+            <h1>Manual Agent Run</h1>
+            <p>Upload files, define the output schema, and run the agent.</p>
+
+            <section class="section">
+                <h2>Input files</h2>
+                <input type="file" id="fileInput" multiple accept=".csv,.xlsx,.xls,.txt">
+                <div id="fileList" class="file-list"></div>
+            </section>
+
+            <section class="section">
+                <h2>Additional instructions</h2>
+                <label class="toggle-label">
+                    <input type="checkbox" id="useInstructions">
+                    Send additional instructions
+                </label>
+                <textarea id="additionalInstructions" disabled placeholder="Describe constraints, extraction rules, and expected output behavior."></textarea>
+            </section>
+
+            <section class="section">
+                <h2>Output schema</h2>
+                <p class="hint" id="schemaHint">No columns defined. Add columns below, or run with none—the agent will infer the output structure from the input files.</p>
+                <div class="schema-actions">
+                    <button type="button" id="addColumn">Add column</button>
+                    <button type="button" id="removeColumn">Remove last column</button>
+                </div>
+                <div id="schemaRows"></div>
+            </section>
+
+            <section class="section">
+                <button type="button" id="runButton" class="primary">Run agent</button>
+                <div id="loading" class="loading" hidden>Running agent... this may take a few minutes.</div>
+            </section>
+
+            <section class="section" id="outputSection" hidden>
+                <h2>Output</h2>
+                <div id="outputSuccess" class="success" hidden>Agent run completed.</div>
+                <div id="outputTableWrap"></div>
+                <a id="downloadLink" class="download-btn" hidden>Download output as CSV</a>
+            </section>
+
+            <section class="section" id="messagesSection">
+                <h2>Agent Discussion</h2>
+                <div id="messagesPanel" class="messages-panel">
+                    <p class="info">Run the agent to display system, assistant, and tool messages.</p>
+                </div>
+            </section>
+        </main>
+    </div>
+    <script src="/js/app.js"></script>
+</body>
+</html>
