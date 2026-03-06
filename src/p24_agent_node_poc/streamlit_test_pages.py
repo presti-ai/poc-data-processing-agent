@@ -18,12 +18,12 @@ from p24_agent_node_poc.test_case_configs import TEST_CASES, load_variant_input_
 MODEL_OPTIONS = [
     "anthropic:claude-opus-4-6",
     "anthropic:claude-sonnet-4-6",
-    "google_genai:gemini-3-pro-preview",
+    "google_genai:gemini-3.1-pro-preview",
 ]
 SUBAGENT_MODEL_OPTIONS = [
     "openai:gpt-5.4",
     "anthropic:claude-sonnet-4-6",
-    "google_genai:gemini-3-pro-preview",
+    "google_genai:gemini-3.1-pro-preview",
 ]
 
 
@@ -112,7 +112,7 @@ def render_manual_page() -> None:
             options=[
                 "anthropic:claude-opus-4-6",
                 "anthropic:claude-sonnet-4-6",
-                "google_genai:gemini-3-pro-preview",
+                "google_genai:gemini-3.1-pro-preview",
             ],
             index=0,
             key="manual_model",

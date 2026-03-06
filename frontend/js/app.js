@@ -4,7 +4,7 @@
  */
 
 const MODEL_OPTIONS = [
-  "google_genai:gemini-3-pro-preview",
+  "google_genai:gemini-3.1-pro-preview",
   "anthropic:claude-opus-4-6",
   "anthropic:claude-sonnet-4-6",
 ];

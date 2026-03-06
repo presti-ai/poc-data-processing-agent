@@ -37,7 +37,11 @@ URL_DELEGATION_THRESHOLD = 10  # Threshold for delegating URL fetching to subage
 
 # Debug log: truncate very long content to avoid huge files
 DEBUG_LOG_TRUNCATE = 8000  # chars for tool results, page content, etc.
-DEBUG_LOG_PATH = Path("log.txt")
+# Log file and data dirs in project root (derived from this module's location) so they're consistent regardless of CWD
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DEBUG_LOG_PATH = _PROJECT_ROOT / "log.txt"
+DATA_INPUT_DIR = _PROJECT_ROOT / "data" / "input"
+DATA_OUTPUT_DIR = _PROJECT_ROOT / "data" / "output"
 
 
 def _debug_log(f: TextIO, section: str, content: Any, truncate: bool = True) -> None:
@@ -112,13 +116,29 @@ def process_data(
             source_path = source_path.resolve()
         resolved_input_files.append(source_path)
 
+    # Generate run timestamp for pairing input/output saves
+    run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    # Save input files to data/input/ before run
+    DATA_INPUT_DIR.mkdir(parents=True, exist_ok=True)
+    saved_input_paths: List[Path] = []
+    for i, source_path in enumerate(resolved_input_files):
+        if source_path.exists() and source_path.is_file():
+            ext = source_path.suffix or ".csv"
+            dest_name = f"input_{run_timestamp}_{i}{ext}"
+            dest_path = DATA_INPUT_DIR / dest_name
+            shutil.copy2(source_path, dest_path)
+            saved_input_paths.append(dest_path)
+    if saved_input_paths:
+        logger.info("Inputs saved to {}", [str(p) for p in saved_input_paths])
+
     # Create isolated temp workspace; agent works inside it and produces output.csv
     with tempfile.TemporaryDirectory() as workspace_root:
         original_cwd = os.getcwd()
         os.chdir(workspace_root)  # Agent runs in workspace so paths resolve correctly
 
         # Open debug log file (append mode so multi-run / two-phase runs accumulate)
-        log_path = Path(original_cwd) / DEBUG_LOG_PATH
+        log_path = DEBUG_LOG_PATH
         debug_file: Optional[TextIO] = None
         loguru_sink_id: Optional[int] = None
         try:
@@ -408,11 +428,10 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                 len(message_log),
             )
 
-            # Save output to output folder with a timestamped filename
-            out_dir = Path(save_output_dir).expanduser().resolve() if save_output_dir else Path(original_cwd) / "data" / "output"
+            # Save output to data/output/ with same timestamp as inputs
+            out_dir = Path(save_output_dir).expanduser().resolve() if save_output_dir else DATA_OUTPUT_DIR
             out_dir.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            saved_path = out_dir / f"output_{timestamp}.csv"
+            saved_path = out_dir / f"output_{run_timestamp}.csv"
             result_df.to_csv(saved_path, index=False)
             logger.info("Output saved to {}", saved_path)
 

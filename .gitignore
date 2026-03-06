@@ -36,3 +36,4 @@ htmlcov/
 # Debug logs (generated during agent runs)
 log.txt
 
+*.csv
