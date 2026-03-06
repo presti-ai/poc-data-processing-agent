@@ -4,6 +4,7 @@ Custom tools for the data processing agent: web search and URL fetching.
 - Internet_search: Tavily-powered web search for finding information.
 - Fetch_page_content: Clean text extraction via Jina Reader (bypasses some bot protection).
 - Fetch_HTML_from_URL: Raw HTML fetch with Jina fallback on 403.
+- Fetch_wayback_page: Fetch archived page from Wayback Machine when direct fetch fails.
 """
 
 import os
@@ -61,6 +62,11 @@ def fetch_page_content(url: str) -> str:
         return f"Jina Reader request failed: {exc}"
     if not resp.ok:
         snippet = resp.text[:500]
+        if resp.status_code == 402:
+            return (
+                f"Jina Reader returned 402 (Payment Required). "
+                f"Try Fetch_wayback_page for archived content, or Fetch_HTML_from_URL for raw HTML."
+            )
         return f"Jina Reader returned {resp.status_code}: {snippet}"
     logger.info("Fetch_page_content success: {} chars", len(resp.text))
     return resp.text
@@ -81,7 +87,7 @@ def fetch_html(url: str) -> str:
     }
 
     try:
-        resp = requests.get(url, headers=headers, timeout=30)
+        resp = requests.get(url, headers=headers, timeout=15)
     except Exception as exc:  # pragma: no cover - network / connectivity errors
         return f"Request failed: {exc}"
 
@@ -93,7 +99,7 @@ def fetch_html(url: str) -> str:
         if jina_api_key:
             jina_headers["Authorization"] = f"Bearer {jina_api_key}"
         try:
-            resp = requests.get(reader_url, headers=jina_headers, timeout=30)
+            resp = requests.get(reader_url, headers=jina_headers, timeout=15)
         except Exception as exc:
             return f"Jina Reader fallback failed: {exc}"
 
@@ -102,6 +108,26 @@ def fetch_html(url: str) -> str:
         return f"Request returned {resp.status_code}: {snippet}"
     logger.info("Fetch_HTML_from_URL success: {} chars", len(resp.text))
     return resp.text
+
+
+@tool("Fetch_wayback_page")
+def fetch_wayback_page(url: str, timestamp: str = "20240101000000") -> str:
+    """Fetch an archived snapshot of a URL from the Wayback Machine. Use when direct fetch fails (403, 404, 402)."""
+    logger.info("Fetch_wayback_page invoked: url={} timestamp={}", url[:80], timestamp)
+    if not url.startswith("http://") and not url.startswith("https://"):
+        return f"Invalid URL (must start with http:// or https://): {url}"
+    wayback_url = f"https://web.archive.org/web/{timestamp}/{url}"
+    result = fetch_html.invoke(wayback_url)
+    if "returned 403" in result or "returned 404" in result or "returned 402" in result:
+        # Try a few alternative timestamps
+        for ts in ["20230101000000", "20220101000000"]:
+            if ts == timestamp:
+                continue
+            wayback_url = f"https://web.archive.org/web/{ts}/{url}"
+            result = fetch_html.invoke(wayback_url)
+            if "returned" not in result or "success" in result.lower():
+                break
+    return result
 
 
 # CLI test: run with `python -m p24_agent_node_poc.tools`

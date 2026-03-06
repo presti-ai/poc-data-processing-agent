@@ -15,6 +15,17 @@ from langchain_core.messages import BaseMessage, messages_to_dict
 from p24_agent_node_poc.agent import process_data, process_data_two_phase
 from p24_agent_node_poc.test_case_configs import TEST_CASES, load_variant_input_files
 
+MODEL_OPTIONS = [
+    "anthropic:claude-opus-4-6",
+    "anthropic:claude-sonnet-4-6",
+    "google_genai:gemini-3-pro-preview",
+]
+SUBAGENT_MODEL_OPTIONS = [
+    "openai:gpt-5.4",
+    "anthropic:claude-sonnet-4-6",
+    "google_genai:gemini-3-pro-preview",
+]
+
 
 def _build_output_columns() -> List[Dict[str, str]]:
     """Collect column names/descriptions from session state (Manual page schema inputs)."""
@@ -90,16 +101,32 @@ def render_manual_page() -> None:
     st.title("Manual Agent Run")
     st.write("Upload files, define the output schema, and run the agent.")
 
-    # Default schema: two empty columns
+    # Default schema: empty (user can add columns or run with none)
     if "output_schema" not in st.session_state:
-        st.session_state["output_schema"] = [
-            {"name": "Column 1", "description": ""},
-            {"name": "Column 2", "description": ""},
-        ]
+        st.session_state["output_schema"] = []
 
     with st.sidebar:
         st.header("Configuration")
-        model_name = "anthropic:claude-sonnet-4-6" #"google_genai:gemini-3-pro-preview"
+        model_name = st.selectbox(
+            "Main agent model",
+            options=[
+                "anthropic:claude-opus-4-6",
+                "anthropic:claude-sonnet-4-6",
+                "google_genai:gemini-3-pro-preview",
+            ],
+            index=0,
+            key="manual_model",
+        )
+        subagent_model_name = st.selectbox(
+            "Subagent model",
+            options=[
+                "openai:gpt-5.4",
+                "openai:gpt-4o",
+                "anthropic:claude-sonnet-4-6",
+            ],
+            index=0,
+            key="manual_subagent_model",
+        )
 
     st.subheader("Input files")
     uploaded_files = st.file_uploader(
@@ -123,6 +150,10 @@ def render_manual_page() -> None:
 
     st.subheader("Output schema")
     schema_rows = st.session_state.get("output_schema", [])
+    if not schema_rows:
+        st.caption("No columns defined. Add columns below, or run with none—the agent will infer the output structure from the input files.")
+    if not schema_rows:
+        st.caption("No columns defined. Add columns above, or run with none—the agent will infer the output structure from the input files.")
 
     add_col, remove_col = st.columns(2)
     with add_col:
@@ -131,7 +162,7 @@ def render_manual_page() -> None:
     with remove_col:
         if (
             st.button("Remove last column", key="manual_remove_column")
-            and len(schema_rows) > 1
+            and len(schema_rows) > 0
         ):
             schema_rows.pop()
 
@@ -154,9 +185,7 @@ def render_manual_page() -> None:
     # On run: save uploads to temp dir, call process_data, store result in session
     if run_clicked:
         output_columns = _build_output_columns()
-        if not output_columns:
-            st.error("Please define at least one output column (with a name).")
-        elif not uploaded_files:
+        if not uploaded_files:
             st.error("Please upload at least one input file.")
         else:
             with st.spinner("Running agent... this may take a few minutes."):
@@ -182,6 +211,7 @@ def render_manual_page() -> None:
                             if use_additional_instructions
                             else None,
                             model_name=model_name,
+                            subagent_model_name=subagent_model_name,
                         )
                 except Exception as exc:
                     st.error(f"Agent run failed: {exc}")
@@ -218,7 +248,18 @@ def render_test_case_page(case_key: str) -> None:
 
     with st.sidebar:
         st.header("Run configuration")
-        model_name = "google_genai:gemini-3-pro-preview"
+        model_name = st.selectbox(
+            "Main agent model",
+            options=MODEL_OPTIONS,
+            index=0,
+            key=f"{state_prefix}_model",
+        )
+        subagent_model_name = st.selectbox(
+            "Subagent model",
+            options=SUBAGENT_MODEL_OPTIONS,
+            index=0,
+            key=f"{state_prefix}_subagent_model",
+        )
         variant = st.radio(
             "Scenario",
             options=["small", "medium", "large"],
@@ -265,6 +306,7 @@ def render_test_case_page(case_key: str) -> None:
                     if use_additional_instructions
                     else None,
                     model_name=model_name,
+                    subagent_model_name=subagent_model_name,
                 )
             except Exception as exc:
                 st.error(f"Agent run failed: {exc}")
@@ -302,7 +344,18 @@ def render_uc2_page() -> None:
 
     with st.sidebar:
         st.header("Run configuration")
-        model_name = "google_genai:gemini-3-pro-preview"
+        model_name = st.selectbox(
+            "Main agent model",
+            options=MODEL_OPTIONS,
+            index=0,
+            key=f"{state_prefix}_model",
+        )
+        subagent_model_name = st.selectbox(
+            "Subagent model",
+            options=SUBAGENT_MODEL_OPTIONS,
+            index=0,
+            key=f"{state_prefix}_subagent_model",
+        )
         variant = st.radio(
             "Scenario",
             options=["small", "medium", "large"],
@@ -353,6 +406,7 @@ def render_uc2_page() -> None:
                         if use_additional_instructions
                         else None,
                         model_name=model_name,
+                        subagent_model_name=subagent_model_name,
                     )
                 except Exception as exc:
                     st.error(f"Agent run failed: {exc}")
@@ -410,6 +464,7 @@ def render_uc2_page() -> None:
                     if use_additional_instructions
                     else None,
                     model_name=model_name,
+                    subagent_model_name=subagent_model_name,
                     sample_size=5,
                     validated_phase1_df=None,
                 )
@@ -446,6 +501,7 @@ def render_uc2_page() -> None:
                     if use_additional_instructions
                     else None,
                     model_name=model_name,
+                    subagent_model_name=subagent_model_name,
                     sample_size=5,
                     validated_phase1_df=validated_df,
                 )
@@ -532,7 +588,18 @@ def render_upload_test_case_page(case_key: str, max_rows: int = MAX_UPLOAD_ROWS)
 
     with st.sidebar:
         st.header("Run configuration")
-        model_name = "google_genai:gemini-3-pro-preview"
+        model_name = st.selectbox(
+            "Main agent model",
+            options=MODEL_OPTIONS,
+            index=0,
+            key=f"{state_prefix}_model",
+        )
+        subagent_model_name = st.selectbox(
+            "Subagent model",
+            options=SUBAGENT_MODEL_OPTIONS,
+            index=0,
+            key=f"{state_prefix}_subagent_model",
+        )
 
     # File uploaders
     uploaded_data: List[tuple[str, object, pd.DataFrame]] = []  # (label, file, df)
@@ -601,6 +668,7 @@ def render_upload_test_case_page(case_key: str, max_rows: int = MAX_UPLOAD_ROWS)
                                 output_columns=config.output_columns,
                                 additional_instructions=effective_instructions,
                                 model_name=model_name,
+                                subagent_model_name=subagent_model_name,
                             )
                             st.session_state[f"{state_prefix}_result_df"] = result_df
                             st.session_state[f"{state_prefix}_messages"] = messages

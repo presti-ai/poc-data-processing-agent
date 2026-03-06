@@ -118,12 +118,7 @@ class TestDataProcessingAgent(unittest.TestCase):
                 )
 
                 system_prompt = mock_create_agent.call_args.kwargs["system_prompt"]
-                self.assertIn("URL delegation threshold = 10", system_prompt)
-
-                stream_call = mock_agent.stream.call_args
-                initial_state = stream_call.args[0]
-                initial_message = initial_state["messages"][0].content
-                self.assertIn("Detected URL candidates in provided inputs: 12", initial_message)
+                self.assertIn("delegate the task to subagents", system_prompt)
 
                 if os.path.exists(workspace):
                     shutil.rmtree(workspace)

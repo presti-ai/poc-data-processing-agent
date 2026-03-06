@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, TextIO
@@ -28,7 +29,7 @@ from langchain_core.messages import (
 from langchain_experimental.tools import PythonREPLTool
 from loguru import logger
 
-from p24_agent_node_poc.tools import fetch_html, fetch_page_content, internet_search
+from p24_agent_node_poc.tools import fetch_html, fetch_page_content, fetch_wayback_page, internet_search
 
 load_dotenv()  # Load API keys from .env (TAVILY_API_KEY, etc.)
 
@@ -56,7 +57,8 @@ def process_data(
     output_columns: List[Dict[str, str]],
     additional_instructions: Optional[str] = None,
     example_output_path: Optional[Path | str] = None,
-    model_name: str = "anthropic:claude-sonnet-4-6",  # alt: google_genai:gemini-3-pro-preview
+    model_name: str = "anthropic:claude-opus-4-6",
+    subagent_model_name: Optional[str] = None,
     save_output_dir: Optional[Path | str] = None,
 ) -> tuple[pd.DataFrame, List[Dict[str, str]]]:
     """
@@ -93,10 +95,11 @@ def process_data(
                 mode="a",
                 format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
             )
+            subagent_model = subagent_model_name or "openai:gpt-5.4"
             _debug_log(
                 debug_file,
                 f"RUN START @ {datetime.now().isoformat()}",
-                f"model={model_name}\n"
+                f"model={model_name}\nsubagent_model={subagent_model}\n"
                 f"input_files={[str(p) for p in resolved_input_files]}\n"
                 f"example_output_path={example_output_path}\n"
                 f"workspace={workspace_root}",
@@ -150,8 +153,34 @@ def process_data(
                 [f"- {col['name']}: {col['description']}" for col in output_columns]
             )
 
+            # Initial user message: lists workspace files; include column spec only when columns are defined
+            if output_columns:
+                initial_message = f"""Start processing the data now.
+
+Input files available in your workspace:
+{chr(10).join([f"- {name}" for name in copied_files])}
+
+The 'output.csv' MUST have the following columns.
+IMPORTANT: Each column description is a strict instruction for how to populate that column.
+{columns_info}
+"""
+            else:
+                initial_message = f"""Start processing the data now.
+
+Input files available in your workspace:
+{chr(10).join([f"- {name}" for name in copied_files])}
+
+Create output.csv based on the input files. Infer the structure and content from the data and any additional instructions below.
+"""
+
             # System prompt: tells the agent its role, tools usage, and delegation policy
             system_prompt = """You are a data processing agent. Your goal is to process input files and create a final CSV file named 'output.csv'.
+
+Efficiency rules:
+- Use file paths relative to the workspace (e.g. input.csv, validated_sample.csv). Do not invent or validate full system paths.
+- Avoid retrying the same URL or tool call more than once unless you have a clear reason.
+- Do not reverse-engineer JavaScript or config endpoints. If Fetch_page_content or Fetch_HTML_from_URL fails (403, 404, etc.), use Fetch_wayback_page to try an archived snapshot instead.
+- Prefer Fetch_wayback_page when direct fetch fails or returns empty content.
 
 General instructions:
 - Read input files with pandas.
@@ -169,17 +198,6 @@ Web fetching delegation policy (mandatory):
   2) then delegate the remaining URL extraction workload to one or more task subagents,
   3) aggregate subagent outputs 
 - For large batches, prefer parallel subagent calls with independent URL chunks.
-"""
-
-            # Initial user message: lists workspace files and required output columns
-            initial_message = f"""Start processing the data now.
-
-Input files available in your workspace:
-{chr(10).join([f"- {name}" for name in copied_files])}
-
-The 'output.csv' MUST have the following columns.
-IMPORTANT: Each column description is a strict instruction for how to populate that column.
-{columns_info}
 """
 
             # Append optional user instructions (e.g. extraction rules for a use case)
@@ -215,8 +233,8 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                     system_prompt=(
                         "You are a sub-agent specialized in web fetching for CSV enrichment. Focus on the assigned URLs and return concise structured results."
                     ),
-                    tools=[fetch_html],        
-                    
+                    tools=[fetch_html, fetch_wayback_page],
+                    model=subagent_model,
                     middleware=[
                             ToolCallLimitMiddleware(
                                 run_limit=6,  # e.g. max 15 fetch_html calls per delegation
@@ -232,6 +250,7 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                     internet_search,
                     fetch_page_content,
                     fetch_html,
+                    fetch_wayback_page,
                 ],
                 system_prompt=system_prompt,
                 backend=backend,
@@ -240,70 +259,89 @@ Use it as a strict reference for column format, extraction logic, and URL struct
 
             logger.info("Invoking agent stream")
             message_log = []
-            # Stream agent responses; capture final state and log model/tool activity
-            for stream_mode, chunk in agent.stream(
-                {"messages": [HumanMessage(content=initial_message)]},
-                config={"configurable": {"thread_id": "data_proc_session"}},
-                stream_mode=["updates", "values"],
-            ):
-                # "values" = full state snapshot; "updates" = incremental model/tool output
-                # stream_mode can be a tuple for namespaced events (e.g. subagent streams)
-                if stream_mode == "values" or stream_mode == ("values",):
-                    message_log = chunk  # Keep latest state for UI display
-                    continue
+            RATE_LIMIT_RETRIES = 3
+            RATE_LIMIT_WAIT = 65  # seconds (token-per-minute limit resets ~every minute)
 
-                if debug_file and stream_mode not in ("updates", ("updates",)):
-                    _debug_log(
-                        debug_file,
-                        f"STREAM MODE (may indicate subagent): {stream_mode}",
-                        list(chunk.keys()) if isinstance(chunk, dict) else str(chunk)[:500],
-                        truncate=False,
-                    )
+            for attempt in range(RATE_LIMIT_RETRIES):
+                try:
+                    # Stream agent responses; capture final state and log model/tool activity
+                    for stream_mode, chunk in agent.stream(
+                        {"messages": [HumanMessage(content=initial_message)]},
+                        config={"configurable": {"thread_id": "data_proc_session"}},
+                        stream_mode=["updates", "values"],
+                    ):
+                        # "values" = full state snapshot; "updates" = incremental model/tool output
+                        # stream_mode can be a tuple for namespaced events (e.g. subagent streams)
+                        if stream_mode == "values" or stream_mode == ("values",):
+                            message_log = chunk  # Keep latest state for UI display
+                            continue
 
-                # Log model reasoning and tool calls for debugging/transparency
-                if not chunk.get("model") and not chunk.get("tools"):
-                    logger.debug("Received chunk: {}", chunk)
-                    if debug_file and chunk:
-                        _debug_log(
-                            debug_file,
-                            "STREAM CHUNK (other)",
-                            {k: str(v)[:500] for k, v in chunk.items()},
-                            truncate=False,
-                        )
-
-                if model_chunk := chunk.get("model"):
-                    for msg in model_chunk.get("messages", []):
-                        msg: AIMessage
-                        if msg.content:
-                            text = msg.content if isinstance(msg.content, str) else (
-                                msg.content[0].get("text", str(msg.content)) if msg.content else ""
+                        if debug_file and stream_mode not in ("updates", ("updates",)):
+                            _debug_log(
+                                debug_file,
+                                f"STREAM MODE (may indicate subagent): {stream_mode}",
+                                list(chunk.keys()) if isinstance(chunk, dict) else str(chunk)[:500],
+                                truncate=False,
                             )
-                            logger.info("Model - {}", text[:100] + "..." if len(str(text)) > 100 else text)
-                            if debug_file:
-                                _debug_log(debug_file, "MAIN AGENT (AI message)", text)
-                        if msg.tool_calls:
-                            for tc in msg.tool_calls:
-                                tc: dict
-                                logger.info("Model - Tool call: {}", tc.get("name", "?"))
+
+                        # Log model reasoning and tool calls for debugging/transparency
+                        if not chunk.get("model") and not chunk.get("tools"):
+                            logger.debug("Received chunk: {}", chunk)
+                            if debug_file and chunk:
+                                _debug_log(
+                                    debug_file,
+                                    "STREAM CHUNK (other)",
+                                    {k: str(v)[:500] for k, v in chunk.items()},
+                                    truncate=False,
+                                )
+
+                        if model_chunk := chunk.get("model"):
+                            for msg in model_chunk.get("messages", []):
+                                msg: AIMessage
+                                if msg.content:
+                                    text = msg.content if isinstance(msg.content, str) else (
+                                        msg.content[0].get("text", str(msg.content)) if msg.content else ""
+                                    )
+                                    logger.info("Model - {}", text[:100] + "..." if len(str(text)) > 100 else text)
+                                    if debug_file:
+                                        _debug_log(debug_file, "MAIN AGENT (AI message)", text)
+                                if msg.tool_calls:
+                                    for tc in msg.tool_calls:
+                                        tc: dict
+                                        logger.info("Model - Tool call: {}", tc.get("name", "?"))
+                                        if debug_file:
+                                            _debug_log(
+                                                debug_file,
+                                                f"MAIN AGENT -> TOOL CALL: {tc.get('name', '?')}",
+                                                {"args": tc.get("args", {}), "id": tc.get("id")},
+                                                truncate=False,
+                                            )
+                        if tool_chunk := chunk.get("tools"):
+                            for msg in tool_chunk.get("messages", []):
+                                msg: ToolMessage
+                                logger.info(
+                                    "Tool {} - {}...", msg.name, str(msg.content)[:50]
+                                )
                                 if debug_file:
                                     _debug_log(
                                         debug_file,
-                                        f"MAIN AGENT -> TOOL CALL: {tc.get('name', '?')}",
-                                        {"args": tc.get("args", {}), "id": tc.get("id")},
-                                        truncate=False,
+                                        f"TOOL RESULT: {msg.name}",
+                                        msg.content,
                                     )
-                if tool_chunk := chunk.get("tools"):
-                    for msg in tool_chunk.get("messages", []):
-                        msg: ToolMessage
-                        logger.info(
-                            "Tool {} - {}...", msg.name, str(msg.content)[:50]
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if attempt < RATE_LIMIT_RETRIES - 1 and ("429" in err_str or "rate_limit" in err_str):
+                        wait = RATE_LIMIT_WAIT
+                        logger.warning(
+                            "Rate limit (429), waiting {}s before retry {}/{}",
+                            wait,
+                            attempt + 2,
+                            RATE_LIMIT_RETRIES,
                         )
-                        if debug_file:
-                            _debug_log(
-                                debug_file,
-                                f"TOOL RESULT: {msg.name}",
-                                msg.content,
-                            )
+                        time.sleep(wait)
+                    else:
+                        raise
 
             # Agent must produce output.csv; fail if missing
             output_path = Path(workspace_root) / "output.csv"
@@ -358,7 +396,8 @@ def process_data_two_phase(
     input_path: Path,
     output_columns: List[Dict[str, str]],
     additional_instructions: Optional[str],
-    model_name: str = "google_genai:gemini-3-pro-preview",
+    model_name: str = "anthropic:claude-opus-4-6",
+    subagent_model_name: Optional[str] = None,
     sample_size: int = 5,
     validated_phase1_df: Optional[pd.DataFrame] = None,
 ) -> tuple[
@@ -395,6 +434,7 @@ def process_data_two_phase(
                 output_columns=output_columns,
                 additional_instructions=additional_instructions,
                 model_name=model_name,
+                subagent_model_name=subagent_model_name,
             )
             return phase1_df, None, phase1_messages, []
         finally:
@@ -425,6 +465,7 @@ def process_data_two_phase(
             additional_instructions=additional_instructions,
             example_output_path=validated_path,
             model_name=model_name,
+            subagent_model_name=subagent_model_name,
         )
         return None, phase2_df, [], phase2_messages
     finally:
