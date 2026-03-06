@@ -9,6 +9,30 @@ body {
     background: #f5f5f5;
 }
 
+.top-nav {
+    display: flex;
+    gap: 0;
+    background: #1e1e1e;
+    padding: 0.5rem 1.5rem;
+    border-bottom: 1px solid #333;
+}
+
+.top-nav .nav-link {
+    color: #e0e0e0;
+    text-decoration: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+}
+
+.top-nav .nav-link:hover {
+    background: #2d2d2d;
+}
+
+.top-nav .nav-link.active {
+    background: #0066cc;
+    color: white;
+}
+
 .layout {
     display: flex;
     min-height: 100vh;
@@ -283,3 +307,21 @@ button:disabled {
     text-decoration: underline;
 }
 
+/* Run History */
+.runs-table-wrap {
+    overflow-x: auto;
+    margin-top: 1rem;
+}
+.runs-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+.runs-table th, .runs-table td { border: 1px solid #ddd; padding: 0.5rem; text-align: left; }
+.runs-table th { background: #f0f0f0; }
+.runs-row { cursor: pointer; }
+.runs-row:hover { background: #f5f5f5; }
+.runs-row:hover .delete-run-btn { opacity: 1; }
+.delete-run-btn { opacity: 0; background: #c00; color: white; border: none; border-radius: 4px; cursor: pointer; padding: 0.25rem 0.5rem; }
+.delete-run-btn:hover { background: #a00; }
+.rerun-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+button.secondary { background: #666; color: white; border-color: #666; }
+button.secondary:hover { background: #555; }
+button.secondary:hover { background: #555; }
+button.secondary:hover { background: #555; }

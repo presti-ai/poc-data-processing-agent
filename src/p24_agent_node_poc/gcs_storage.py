@@ -5,7 +5,9 @@ Handles uploads, downloads, and upload history persisted in a JSON blob.
 
 import json
 import re
+from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from google.cloud import storage
 from requests.exceptions import ConnectionError as RequestsConnectionError
@@ -16,6 +18,7 @@ BUCKET_NAME = "presti-tmp-test"
 HAITHEM_PREFIX = "haithem"
 HISTORY_BLOB = f"{HAITHEM_PREFIX}/uploads_history.json"
 OUTPUTS_PREFIX = f"{HAITHEM_PREFIX}/outputs"
+RUNS_HISTORY_BLOB = f"{HAITHEM_PREFIX}/runs_history.json"
 
 _storage_client: storage.Client | None = None
 
@@ -121,3 +124,57 @@ def append_to_history(entry: dict[str, Any]) -> None:
         json.dumps(history, indent=2),
         content_type="application/json",
     )
+
+
+def read_runs_history() -> list[dict[str, Any]]:
+    """Read run history from GCS. Returns empty list if missing or invalid."""
+    try:
+        client = get_storage_client()
+        bucket = client.bucket(BUCKET_NAME)
+        blob = bucket.blob(RUNS_HISTORY_BLOB)
+        data = blob.download_as_bytes()
+        runs = json.loads(data.decode("utf-8"))
+        return runs if isinstance(runs, list) else []
+    except Exception:
+        return []
+
+
+def append_run(entry: dict[str, Any]) -> str:
+    """Append a run entry to history. Uses entry['id'] if present, else generates. Returns run id."""
+    run_id = entry.get("id") or f"run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{uuid4().hex[:8]}"
+    entry["id"] = run_id
+    runs = read_runs_history()
+    runs.append(entry)
+    client = get_storage_client()
+    bucket = client.bucket(BUCKET_NAME)
+    blob = bucket.blob(RUNS_HISTORY_BLOB)
+    blob.upload_from_string(
+        json.dumps(runs, indent=2),
+        content_type="application/json",
+    )
+    return run_id
+
+
+def delete_run(run_id: str) -> bool:
+    """Remove a run entry by id. Returns True if found and removed."""
+    runs = read_runs_history()
+    original_len = len(runs)
+    runs = [r for r in runs if r.get("id") != run_id]
+    if len(runs) == original_len:
+        return False
+    client = get_storage_client()
+    bucket = client.bucket(BUCKET_NAME)
+    blob = bucket.blob(RUNS_HISTORY_BLOB)
+    blob.upload_from_string(
+        json.dumps(runs, indent=2),
+        content_type="application/json",
+    )
+    return True
+
+
+def get_run(run_id: str) -> dict[str, Any] | None:
+    """Fetch a single run by id. Returns None if not found."""
+    for r in read_runs_history():
+        if r.get("id") == run_id:
+            return r
+    return None

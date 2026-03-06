@@ -1,7 +1,7 @@
 """
 FastAPI server for the P24 data processing agent.
 Serves the frontend and provides /api/run for agent execution with SSE streaming.
-Also provides /api/upload (zip/files to GCS) and /api/history.
+Run history is stored in GCS; inputs are uploaded to GCS when Run is clicked.
 """
 
 import asyncio
@@ -10,6 +10,7 @@ import json
 import mimetypes
 import shutil
 import tempfile
+import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -24,11 +25,13 @@ from fastapi.staticfiles import StaticFiles
 
 from p24_agent_node_poc.agent import process_data
 from p24_agent_node_poc.gcs_storage import (
-    append_to_history,
+    append_run,
+    delete_run,
     download_from_gcs,
     download_output as gcs_download_output,
+    get_run,
     list_outputs as gcs_list_outputs,
-    read_history_json,
+    read_runs_history,
     upload_to_haithem,
 )
 
@@ -71,6 +74,10 @@ async def _run_agent_sse(
     additional_instructions: str | None,
     model_name: str,
     subagent_model_name: str | None,
+    run_id: str,
+    start_time: float,
+    input_infos: list[dict],
+    params: dict,
 ):
     """Async generator that yields SSE events from the agent run."""
     queue: Queue = Queue()
@@ -82,6 +89,7 @@ async def _run_agent_sse(
             queue.put(("chunk", {"stream_mode": stream_mode, "data": payload}))
 
     def run_in_thread():
+        output_gcs_uri = None
         try:
             result_df, _ = process_data(
                 input_files=input_paths,
@@ -92,18 +100,16 @@ async def _run_agent_sse(
                 on_stream_chunk=on_chunk,
             )
             csv_str = result_df.to_csv(index=False)
-            # Upload to GCS (agent already saves to data/output/ locally)
             try:
-                ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                blob_path = f"outputs/output_{ts}.csv"
-                upload_to_haithem(csv_str.encode("utf-8"), blob_path, "text/csv")
+                output_filename = f"output_{run_id}.csv"
+                blob_path = f"outputs/{output_filename}"
+                output_gcs_uri = upload_to_haithem(csv_str.encode("utf-8"), blob_path, "text/csv")
             except Exception:
-                pass  # Don't fail the run if GCS upload fails
-            queue.put(("done", {"csv": csv_str, "error": None}))
+                pass
+            queue.put(("done", {"csv": csv_str, "error": None, "output_gcs_uri": output_gcs_uri}))
         except Exception as e:
-            queue.put(("done", {"csv": None, "error": str(e)}))
+            queue.put(("done", {"csv": None, "error": str(e), "output_gcs_uri": None}))
 
-    loop = asyncio.get_event_loop()
     task = asyncio.to_thread(run_in_thread)
     run_task = asyncio.create_task(task)
 
@@ -122,7 +128,26 @@ async def _run_agent_sse(
             elif event_type == "retry":
                 yield _sse_event({"type": "retry", "message": payload.get("message", "")})
             elif event_type == "done":
-                yield _sse_event({"type": "done", **payload})
+                duration_seconds = time.time() - start_time
+                outputs = []
+                if payload.get("output_gcs_uri"):
+                    outputs.append({"name": f"output_{run_id}.csv", "gcs_uri": payload["output_gcs_uri"]})
+                status = "failed" if payload.get("error") else "completed"
+                run_entry = {
+                    "id": run_id,
+                    "timestamp": datetime.fromtimestamp(start_time).isoformat(),
+                    "inputs": input_infos,
+                    "outputs": outputs,
+                    "duration_seconds": round(duration_seconds, 2),
+                    "status": status,
+                    "params": params,
+                }
+                try:
+                    append_run(run_entry)
+                except Exception:
+                    pass
+                done_payload = {**payload, "run_id": run_id}
+                yield _sse_event({"type": "done", **done_payload})
                 break
     finally:
         if not run_task.done():
@@ -141,95 +166,28 @@ def _safe_filename(name: str) -> str:
     return base if base else "unnamed"
 
 
-@app.post("/api/upload")
-async def api_upload(request: Request):
-    """Upload zip or single file to GCS. Extracts zip contents, uploads each file, appends to history."""
-    form = await request.form()
-    files = form.getlist("file")
-    if not files:
-        files = form.getlist("files")
-    if not files:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Please upload at least one file (field: file or files)."},
-        )
-
-    upload_id = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{uuid4().hex[:8]}"
-    uploaded_files: list[dict] = []
-
-    try:
-        for f in files:
-            filename = f.filename or "unnamed"
-            content = await f.read()
-
-            if filename.lower().endswith(".zip"):
-                with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
-                    for info in zf.infolist():
-                        if info.is_dir():
-                            continue
-                        ext = Path(info.filename).suffix.lower()
-                        if ext not in ALLOWED_EXTENSIONS:
-                            continue
-                        safe_name = _safe_filename(info.filename)
-                        if not safe_name:
-                            continue
-                        file_content = zf.read(info)
-                        blob_path = f"{upload_id}/{safe_name}"
-                        content_type = _guess_content_type(safe_name)
-                        gcs_uri = upload_to_haithem(file_content, blob_path, content_type)
-                        uploaded_files.append({
-                            "name": safe_name,
-                            "gcs_path": f"haithem/{blob_path}",
-                            "gcs_uri": gcs_uri,
-                            "content_type": content_type or "application/octet-stream",
-                        })
-            else:
-                ext = Path(filename).suffix.lower()
-                if ext not in ALLOWED_EXTENSIONS:
-                    continue
-                safe_name = _safe_filename(filename)
-                blob_path = f"{upload_id}/{safe_name}"
-                content_type = _guess_content_type(safe_name)
-                gcs_uri = upload_to_haithem(content, blob_path, content_type)
-                uploaded_files.append({
-                    "name": safe_name,
-                    "gcs_path": f"haithem/{blob_path}",
-                    "gcs_uri": gcs_uri,
-                    "content_type": content_type or "application/octet-stream",
-                })
-
-        if not uploaded_files:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "No allowed files found. Allowed: " + ", ".join(ALLOWED_EXTENSIONS)},
-            )
-
-        source_name = files[0].filename or "upload"
-        entry = {
-            "id": upload_id,
-            "timestamp": datetime.now().isoformat(),
-            "source": source_name,
-            "files": uploaded_files,
-        }
-        append_to_history(entry)
-
-        return JSONResponse(content={
-            "id": upload_id,
-            "source": source_name,
-            "files": uploaded_files,
-            "gcs_paths": [uf["gcs_uri"] for uf in uploaded_files],
-        })
-    except zipfile.BadZipFile:
-        return JSONResponse(status_code=400, content={"error": "Invalid or corrupt zip file."})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+@app.get("/api/runs")
+def api_runs():
+    """Return run history from GCS (newest first)."""
+    runs = read_runs_history()
+    return {"runs": list(reversed(runs))}
 
 
-@app.get("/api/history")
-def api_history():
-    """Return upload history from GCS (newest first)."""
-    history = read_history_json()
-    return {"history": list(reversed(history))}
+@app.get("/api/runs/{run_id}")
+def api_run_get(run_id: str):
+    """Return a single run by id for preset/rerun."""
+    run = get_run(run_id)
+    if run is None:
+        return JSONResponse(status_code=404, content={"error": "Run not found."})
+    return run
+
+
+@app.delete("/api/runs/{run_id}")
+def api_run_delete(run_id: str):
+    """Remove a run from history (files stay in GCS)."""
+    if not delete_run(run_id):
+        return JSONResponse(status_code=404, content={"error": "Run not found."})
+    return {"ok": True}
 
 
 OUTPUT_DIR = Path(__file__).parent / "data" / "output"
@@ -330,14 +288,57 @@ async def api_run(request: Request):
             content={"error": "output_columns must be a JSON array."},
         )
 
+    run_id = f"run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{uuid4().hex[:8]}"
+    start_time = time.time()
+    params = {
+        "model_name": model_name,
+        "subagent_model_name": subagent_model_name,
+        "output_columns": columns,
+        "additional_instructions": additional_instructions,
+    }
+    input_infos: list[dict] = []
+
     tmpdir = tempfile.mkdtemp()
     try:
         input_paths: list[Path] = []
+        upload_prefix = f"uploads/{run_id}"
+
         for i, f in enumerate(files):
-            dest = Path(tmpdir) / (f.filename or f"input_{i}.csv")
             content = await f.read()
-            dest.write_bytes(content)
-            input_paths.append(dest)
+            filename = f.filename or f"input_{i}.csv"
+            if filename.lower().endswith(".zip"):
+                with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
+                    for name in zf.namelist():
+                        if name.endswith("/"):
+                            continue
+                        safe = _safe_filename(name)
+                        ext = Path(safe).suffix.lower()
+                        if ext not in ALLOWED_EXTENSIONS and ext not in AGENT_EXTENSIONS:
+                            continue
+                        blob_path = f"{upload_prefix}/{safe}"
+                        try:
+                            gcs_uri = upload_to_haithem(zf.read(name), blob_path, _guess_content_type(safe))
+                            input_infos.append({"name": safe, "gcs_uri": gcs_uri})
+                            dest = Path(tmpdir) / safe
+                            counter = 0
+                            while dest.exists():
+                                counter += 1
+                                dest = Path(tmpdir) / f"{Path(safe).stem}_{counter}{ext}"
+                            dest.write_bytes(zf.read(name))
+                            input_paths.append(dest)
+                        except Exception:
+                            continue
+            else:
+                safe = _safe_filename(filename)
+                blob_path = f"{upload_prefix}/{safe}"
+                try:
+                    gcs_uri = upload_to_haithem(content, blob_path, _guess_content_type(safe))
+                    input_infos.append({"name": safe, "gcs_uri": gcs_uri})
+                except Exception:
+                    pass
+                dest = Path(tmpdir) / (safe or f"input_{i}.csv")
+                dest.write_bytes(content)
+                input_paths.append(dest)
 
         for i, gcs_uri in enumerate(history_gcs_uris):
             if not isinstance(gcs_uri, str) or not gcs_uri.startswith("gs://"):
@@ -348,6 +349,7 @@ async def api_run(request: Request):
                 ext = Path(name).suffix.lower()
                 if ext not in AGENT_EXTENSIONS:
                     continue
+                input_infos.append({"name": name, "gcs_uri": gcs_uri})
                 dest = Path(tmpdir) / name
                 counter = 0
                 while dest.exists():
@@ -366,6 +368,10 @@ async def api_run(request: Request):
                     additional_instructions=additional_instructions or None,
                     model_name=model_name,
                     subagent_model_name=subagent_model_name or None,
+                    run_id=run_id,
+                    start_time=start_time,
+                    input_infos=input_infos,
+                    params=params,
                 ):
                     yield chunk
             finally:

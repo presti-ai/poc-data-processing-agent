@@ -1,37 +1,126 @@
 /**
  * P24 Agent - Manual Run UI
- * Vanilla JS frontend for the data processing agent API.
+ * Vanilla JS frontend with hash routing: #/, #/history, #/rerun/{run_id}
  */
-
-const MODEL_OPTIONS = [
-  "google_genai:gemini-3.1-pro-preview",
-  "anthropic:claude-opus-4-6",
-  "anthropic:claude-sonnet-4-6",
-];
-const SUBAGENT_OPTIONS = [
-  "openai:gpt-5.4",
-  "openai:gpt-4o",
-  "anthropic:claude-sonnet-4-6",
-];
 
 const AGENT_EXTENSIONS = [".csv", ".xlsx", ".xls", ".txt"];
 
 let schemaRows = [];
+let presetRun = null;
 
 function init() {
-  renderModelSelectors();
   renderSchemaSection();
   document.getElementById("addColumn").addEventListener("click", addColumn);
   document.getElementById("removeColumn").addEventListener("click", removeColumn);
-  document.getElementById("runButton").addEventListener("click", runAgent);
+  document.getElementById("runButton").addEventListener("click", () => runAgent(false));
+  document.getElementById("rerunButton").addEventListener("click", () => runAgent(true));
+  document.getElementById("clearRerunBtn").addEventListener("click", clearRerunPreset);
   document.getElementById("useInstructions").addEventListener("change", toggleInstructions);
-  document.getElementById("uploadToGcsBtn").addEventListener("click", uploadToGCS);
-  loadHistory();
-  loadOutputs();
+
+  window.addEventListener("hashchange", route);
+  document.querySelectorAll(".nav-link").forEach((a) => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      window.location.hash = a.getAttribute("href").slice(1);
+    });
+  });
+
+  route();
 }
 
-function renderModelSelectors() {
-  // Options are in HTML; no need to render dynamically
+function getRoute() {
+  const hash = (window.location.hash || "#/").slice(1);
+  const parts = hash.split("/").filter(Boolean);
+  if (parts[0] === "rerun" && parts[1]) return { page: "rerun", runId: parts[1] };
+  if (parts[0] === "history") return { page: "history" };
+  return { page: "run" };
+}
+
+function route() {
+  const r = getRoute();
+  const runPage = document.getElementById("runPage");
+  const historyPage = document.getElementById("historyPage");
+
+  runPage.hidden = r.page !== "run" && r.page !== "rerun";
+  historyPage.hidden = r.page !== "history";
+
+  document.querySelectorAll(".nav-link").forEach((a) => {
+    const route = a.dataset.route || a.getAttribute("href").slice(2);
+    a.classList.toggle("active", (route === "/" && (r.page === "run" || r.page === "rerun")) || (route === "/history" && r.page === "history"));
+  });
+
+  if (r.page === "history") {
+    loadRuns();
+  } else if (r.page === "rerun" && r.runId) {
+    loadRunForRerun(r.runId);
+  } else {
+    clearRerunPreset();
+  }
+}
+
+async function loadRunForRerun(runId) {
+  try {
+    const res = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
+    if (!res.ok) {
+      clearRerunPreset();
+      window.location.hash = "#/";
+      return;
+    }
+    const run = await res.json();
+    applyRerunPreset(run);
+  } catch (e) {
+    clearRerunPreset();
+    window.location.hash = "#/";
+  }
+}
+
+function applyRerunPreset(run) {
+  presetRun = run;
+  const section = document.getElementById("rerunPresetSection");
+  const infoEl = document.getElementById("rerunPresetInfo");
+  const runBtn = document.getElementById("runButton");
+  const rerunBtn = document.getElementById("rerunButton");
+
+  const inputs = (run.inputs || []).map((i) => i.name || "?").join(", ");
+  const params = run.params || {};
+  infoEl.innerHTML = `
+    <p><strong>Inputs:</strong> ${escapeHtml(inputs || "—")}</p>
+    <p><strong>Duration:</strong> ${run.duration_seconds ?? "—"}s | <strong>Status:</strong> ${escapeHtml(run.status || "—")}</p>
+    <p><strong>Model:</strong> ${escapeHtml(params.model_name || "—")}</p>
+  `;
+
+  if (params.output_columns && Array.isArray(params.output_columns)) {
+    schemaRows = params.output_columns.map((c) => ({
+      name: c.name || "",
+      description: c.description || "",
+    }));
+    renderSchemaSection();
+  }
+  if (params.model_name) {
+    const sel = document.getElementById("modelName");
+    if (sel.querySelector(`option[value="${params.model_name}"]`)) sel.value = params.model_name;
+  }
+  if (params.subagent_model_name) {
+    const sel = document.getElementById("subagentModelName");
+    if (sel.querySelector(`option[value="${params.subagent_model_name}"]`)) sel.value = params.subagent_model_name;
+  }
+  document.getElementById("useInstructions").checked = !!(params.additional_instructions && params.additional_instructions.trim());
+  document.getElementById("additionalInstructions").value = params.additional_instructions || "";
+  document.getElementById("additionalInstructions").disabled = !document.getElementById("useInstructions").checked;
+
+  section.hidden = false;
+  runBtn.hidden = true;
+  rerunBtn.hidden = false;
+}
+
+function clearRerunPreset() {
+  presetRun = null;
+  document.getElementById("rerunPresetSection").hidden = true;
+  document.getElementById("runButton").hidden = false;
+  document.getElementById("rerunButton").hidden = true;
+  if (getRoute().page === "rerun") {
+    window.location.hash = "#/";
+  }
 }
 
 function renderSchemaSection() {
@@ -90,9 +179,11 @@ function getOutputColumns() {
 }
 
 function setLoading(loading) {
-  const btn = document.getElementById("runButton");
+  const runBtn = document.getElementById("runButton");
+  const rerunBtn = document.getElementById("rerunButton");
   const loadingEl = document.getElementById("loading");
-  btn.disabled = loading;
+  runBtn.disabled = loading;
+  rerunBtn.disabled = loading;
   loadingEl.hidden = !loading;
 }
 
@@ -174,113 +265,84 @@ function showError(msg) {
   panel.appendChild(div);
 }
 
-function isAgentCompatible(filename) {
-  const idx = filename.lastIndexOf(".");
-  if (idx < 0) return false;
-  const ext = filename.slice(idx).toLowerCase();
-  return AGENT_EXTENSIONS.includes(ext);
-}
-
-async function uploadToGCS() {
-  const input = document.getElementById("storageFileInput");
-  const statusEl = document.getElementById("uploadStatus");
-  if (!input.files || input.files.length === 0) {
-    statusEl.textContent = "Please select a file to upload.";
-    statusEl.className = "upload-status upload-error";
-    return;
-  }
-  statusEl.textContent = "Uploading...";
-  statusEl.className = "upload-status";
-  const formData = new FormData();
-  formData.append("file", input.files[0]);
+async function loadRuns() {
+  const wrap = document.getElementById("runsTableWrap");
+  wrap.innerHTML = "<p class=\"info\">Loading...</p>";
   try {
-    const res = await fetch("/api/upload", { method: "POST", body: formData });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      statusEl.textContent = data.error || "Upload failed.";
-      statusEl.className = "upload-status upload-error";
-      return;
-    }
-    statusEl.textContent = `Uploaded: ${data.source} (${data.files?.length || 0} files)`;
-    statusEl.className = "upload-status upload-success";
-    input.value = "";
-    loadHistory();
-  } catch (e) {
-    statusEl.textContent = e.message || "Upload failed.";
-    statusEl.className = "upload-status upload-error";
-  }
-}
-
-async function loadHistory() {
-  const listEl = document.getElementById("historyList");
-  listEl.innerHTML = "<p class=\"info\">Loading...</p>";
-  try {
-    const res = await fetch("/api/history");
+    const res = await fetch("/api/runs");
     const data = await res.json();
-    const history = data.history || (Array.isArray(data) ? data : []);
-    if (history.length === 0) {
-      listEl.innerHTML = "<p class=\"info\">No uploads yet. Upload files above.</p>";
+    const runs = data.runs || [];
+    if (runs.length === 0) {
+      wrap.innerHTML = "<p class=\"info\">No runs yet. Run the agent to create history.</p>";
       return;
     }
-    let html = "";
-    for (const entry of history) {
-      const ts = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "—";
-      const files = entry.files || [];
-      const agentFiles = files.filter((f) => isAgentCompatible(f.name || ""));
-      html += `<div class="history-entry"><details><summary>${escapeHtml(entry.source || "upload")} — ${ts} (${files.length} files)</summary>`;
-      html += "<div class=\"history-files\">";
-      for (const f of files) {
-        const canUse = isAgentCompatible(f.name || "");
-        const gcsUri = f.gcs_uri || "";
-        html += `<label class="history-file"><input type="checkbox" data-gcs-uri="${escapeHtml(gcsUri)}" ${!canUse ? "disabled" : ""}> ${escapeHtml(f.name)}${!canUse ? " (not for agent)" : ""}</label>`;
-      }
-      html += "</div></details></div>";
+    let html = `
+      <table class="runs-table">
+        <thead><tr>
+          <th>Date</th><th>Inputs</th><th>Outputs</th><th>Duration</th><th>Status</th><th>Params</th><th></th>
+        </tr></thead>
+        <tbody>
+    `;
+    for (const r of runs) {
+      const date = r.timestamp ? new Date(r.timestamp).toLocaleString() : "—";
+      const inputs = (r.inputs || []).map((i) => i.name).join(", ") || "—";
+      const outputs = (r.outputs || []).map((o) => o.name).join(", ") || "—";
+      const duration = r.duration_seconds != null ? `${r.duration_seconds}s` : "—";
+      const status = r.status || "—";
+      const params = r.params ? `${r.params.model_name || "—"}` : "—";
+      const runId = r.id || "";
+      html += `
+        <tr class="runs-row" data-run-id="${escapeHtml(runId)}">
+          <td>${escapeHtml(date)}</td>
+          <td>${escapeHtml(inputs)}</td>
+          <td>${escapeHtml(outputs)}</td>
+          <td>${escapeHtml(duration)}</td>
+          <td>${escapeHtml(status)}</td>
+          <td>${escapeHtml(params)}</td>
+          <td><button type="button" class="delete-run-btn" data-run-id="${escapeHtml(runId)}" title="Delete">×</button></td>
+        </tr>
+      `;
     }
-    listEl.innerHTML = html;
+    html += "</tbody></table>";
+    wrap.innerHTML = html;
+
+    wrap.querySelectorAll(".runs-row").forEach((row) => {
+      row.addEventListener("click", (e) => {
+        if (e.target.classList.contains("delete-run-btn")) return;
+        const id = row.dataset.runId;
+        if (id) window.location.hash = `#/rerun/${id}`;
+      });
+    });
+    wrap.querySelectorAll(".delete-run-btn").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.runId;
+        if (!id) return;
+        if (!confirm("Delete this run?")) return;
+        try {
+          const res = await fetch(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" });
+          if (res.ok) loadRuns();
+        } catch (err) {
+          console.error(err);
+        }
+      });
+    });
   } catch (e) {
-    listEl.innerHTML = `<p class=\"info\">Failed to load history: ${escapeHtml(e.message)}</p>`;
+    wrap.innerHTML = `<p class=\"info\">Failed to load runs: ${escapeHtml(e.message)}</p>`;
   }
 }
 
-async function loadOutputs() {
-  const listEl = document.getElementById("outputsList");
-  listEl.innerHTML = "<p class=\"info\">Loading...</p>";
-  try {
-    const res = await fetch("/api/outputs");
-    const data = await res.json();
-    const outputs = data.outputs || [];
-    if (outputs.length === 0) {
-      listEl.innerHTML = "<p class=\"info\">No outputs yet. Run the agent to generate outputs.</p>";
-      return;
-    }
-    let html = "";
-    for (const o of outputs) {
-      const ts = o.modified ? new Date(o.modified * 1000).toLocaleString() : "—";
-      const sizeKb = o.size ? (o.size / 1024).toFixed(1) : "—";
-      const url = `/api/outputs/${encodeURIComponent(o.filename)}`;
-      html += `<div class="output-entry"><a href="${url}" download="${escapeHtml(o.filename)}">${escapeHtml(o.filename)}</a> — ${ts} (${sizeKb} KB)</div>`;
-    }
-    listEl.innerHTML = html;
-  } catch (e) {
-    listEl.innerHTML = `<p class=\"info\">Failed to load outputs: ${escapeHtml(e.message)}</p>`;
-  }
-}
-
-function getSelectedHistoryGcsUris() {
-  const uris = [];
-  document.querySelectorAll("#historyList input[type=checkbox]:checked").forEach((cb) => {
-    const uri = cb.dataset.gcsUri;
-    if (uri) uris.push(uri);
-  });
-  return uris;
-}
-
-async function runAgent() {
+async function runAgent(isRerun) {
   const fileInput = document.getElementById("fileInput");
   const files = fileInput.files;
-  const historyUris = getSelectedHistoryGcsUris();
+  let historyUris = [];
+
+  if (isRerun && presetRun && presetRun.inputs) {
+    historyUris = presetRun.inputs.map((i) => i.gcs_uri).filter(Boolean);
+  }
+
   if ((!files || files.length === 0) && historyUris.length === 0) {
-    alert("Please upload at least one file or select files from history.");
+    alert("Please upload at least one file or select a run from history to rerun.");
     return;
   }
 
@@ -372,7 +434,9 @@ async function runAgent() {
               showError(ev.error);
             } else if (ev.csv) {
               showOutput(ev.csv);
-              loadOutputs();
+              if (document.getElementById("historyPage") && !document.getElementById("historyPage").hidden) {
+                loadRuns();
+              }
             }
           }
         } catch (e) {
