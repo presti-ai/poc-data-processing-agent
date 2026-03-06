@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Sequence, TextIO
 import pandas as pd
 from deepagents import SubAgent, create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
+from langchain.agents.middleware import ToolCallLimitMiddleware
 from dotenv import load_dotenv
 from langchain_core.messages import (
     AIMessage,
@@ -204,17 +205,24 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                 _debug_log(debug_file, "INITIAL MESSAGE (sent to main agent)", initial_message, truncate=False)
 
             # DeepAgents: main agent + subagent for URL batch fetching (reduces context size)
-            backend = FilesystemBackend(root_dir=workspace_root, virtual_mode=False)
+            backend = FilesystemBackend(root_dir=workspace_root, virtual_mode=True)
             subagents = [
                 SubAgent(
                     name="web_fetch_batch_worker",
                     description=(
-                        "Use proactively for URL-heavy web extraction tasks. Ideal when processing more than 10 URLs, so the main agent keeps a small context."
+                        "Use proactively for URL-heavy web extraction tasks. Ideal when processing more than 5 URLs, so the main agent keeps a small context."
                     ),
                     system_prompt=(
                         "You are a sub-agent specialized in web fetching for CSV enrichment. Focus on the assigned URLs and return concise structured results."
                     ),
-                    tools=[fetch_html],
+                    tools=[fetch_html],        
+                    
+                    middleware=[
+                            ToolCallLimitMiddleware(
+                                run_limit=6,  # e.g. max 15 fetch_html calls per delegation
+                                exit_behavior="continue",  # block exceeded tools, model returns best effort
+                                            )
+                                ],
                 ),
             ]  # Subagent handles heavy URL extraction; main agent delegates and aggregates
             agent = create_deep_agent(
