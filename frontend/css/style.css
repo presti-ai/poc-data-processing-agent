@@ -782,6 +782,7 @@ details[open] .advanced-summary::before {
     border-radius: var(--radius-sm);
     border-left: 3px solid var(--color-border);
     overflow: hidden;
+    flex-shrink: 0;
 }
 
 .message-block.message-ai { border-left-color: var(--color-primary); }
