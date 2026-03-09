@@ -31,17 +31,31 @@ A powerful data processing agent proof-of-concept that combines LLMs with Python
    poetry run python main.py
    ```
 
-4. **Run the Streamlit UI demo**:
+4. **Run the web app** (FastAPI + vanilla JS frontend):
    ```bash
-   poetry run streamlit run demo_app.py
+   poetry run uvicorn server:app --reload --host 0.0.0.0 --port 8000
    ```
+   Open http://localhost:8000 in your browser. The app provides a manual agent run interface for dataset upload, output schema definition, and real-time streaming of agent messages.
 
 ## 📂 Project Structure
 
 - `main.py`: Entry point for the CLI data processing pipeline.
-- `demo_app.py`: Streamlit demo interface for interactive runs.
+- `server.py`: FastAPI server with `/api/run` (SSE streaming) and static frontend.
+- `frontend/`: Vanilla JS/HTML/CSS frontend (index.html, css/, js/).
 - `src/p24_agent_node_poc/agent.py`: Core agent logic and system prompts.
 - `src/p24_agent_node_poc/tools.py`: Custom tools for search and web fetching.
-- `data/`: Sample datasets for testing.
+- `data/test_cases/`: Test datasets for each use case (`small` + `100-row` scenarios).
+
+## 📋 Debug Logging
+
+When running the agent (CLI or web app), a `log.txt` file is created in the working directory. It captures:
+- Full system prompt and initial message
+- Workspace path and copied files
+- Main agent AI messages (reasoning)
+- Tool calls with arguments
+- Tool results (truncated if very long)
+- Tool invocations from `tools.py` (Fetch_page_content, Fetch_HTML_from_URL, Internet_search)
+
+Use it to debug agent behavior, understand what the main agent is doing, and trace subagent delegations.
 
 Built with ❤️ for efficient data automation.

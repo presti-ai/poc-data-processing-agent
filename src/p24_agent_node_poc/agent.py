@@ -1,199 +1,550 @@
+"""
+Core agent module: orchestrates the LLM-based data processing pipeline.
+
+Creates an isolated workspace, copies input files, invokes the deep agent with
+tools (Python REPL, web search, page fetching), and returns the produced output.csv.
+"""
+
+import json
 import os
+import shutil
 import tempfile
-from typing import Dict, List, Optional, Tuple, Union
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Sequence, TextIO
 
 import pandas as pd
-from deepagents import create_deep_agent, SubAgent
+from deepagents import SubAgent, create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
+from langchain.agents.middleware import ToolCallLimitMiddleware
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    messages_to_dict,
+    ToolMessage,
+)
 from langchain_experimental.tools import PythonREPLTool
 from loguru import logger
 
-from p24_agent_node_poc.tools import fetch_html, internet_search
+from p24_agent_node_poc.image_migration import migrate_image_urls_in_dataframe
+from p24_agent_node_poc.tools import (
+    fetch_html,
+    fetch_page_content,
+    fetch_wayback_page,
+    internet_search,
+    upload_file_gcs,
+)
 
-load_dotenv()
+load_dotenv()  # Load API keys from .env (TAVILY_API_KEY, etc.)
+
+URL_DELEGATION_THRESHOLD = 10  # Threshold for delegating URL fetching to subagents
+
+# Debug log: truncate very long content to avoid huge files
+DEBUG_LOG_TRUNCATE = 8000  # chars for tool results, page content, etc.
+# Log file and data dirs in project root (derived from this module's location) so they're consistent regardless of CWD
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DEBUG_LOG_PATH = _PROJECT_ROOT / "log.txt"
+DATA_INPUT_DIR = _PROJECT_ROOT / "data" / "input"
+DATA_OUTPUT_DIR = _PROJECT_ROOT / "data" / "output"
+
+
+def _debug_log(f: TextIO, section: str, content: Any, truncate: bool = True) -> None:
+    """Write a section to the debug log file."""
+    if isinstance(content, dict):
+        content = json.dumps(content, indent=2, default=str)
+    elif not isinstance(content, str):
+        content = str(content)
+    if truncate and len(content) > DEBUG_LOG_TRUNCATE:
+        content = content[:DEBUG_LOG_TRUNCATE] + f"\n... [TRUNCATED, total {len(content)} chars]"
+    f.write(f"\n{'='*60}\n{section}\n{'='*60}\n{content}\n")
+    f.flush()
+
+
+SSE_TRUNCATE = 2000  # chars for SSE payloads to avoid huge events
+
+
+def _serialize_chunk_for_sse(chunk: dict) -> Optional[dict]:
+    """Convert a stream chunk to JSON-serializable dict for SSE. Returns None if empty."""
+    payload: dict = {}
+    if model_chunk := chunk.get("model"):
+        msgs = model_chunk.get("messages", [])
+        valid = [m for m in msgs if isinstance(m, BaseMessage)]
+        if valid:
+            payload["model"] = messages_to_dict(valid)
+            # Truncate long content in payload
+            for m in payload.get("model", []):
+                d = m.get("data", {})
+                if "content" in d:
+                    c = d["content"]
+                    if isinstance(c, str) and len(c) > SSE_TRUNCATE:
+                        d["content"] = c[:SSE_TRUNCATE] + f"... [TRUNCATED, total {len(c)} chars]"
+    if tool_chunk := chunk.get("tools"):
+        msgs = tool_chunk.get("messages", [])
+        valid = [m for m in msgs if isinstance(m, BaseMessage)]
+        if valid:
+            payload["tools"] = messages_to_dict(valid)
+            for m in payload.get("tools", []):
+                d = m.get("data", {})
+                if "content" in d:
+                    c = d["content"]
+                    if isinstance(c, str) and len(c) > SSE_TRUNCATE:
+                        d["content"] = c[:SSE_TRUNCATE] + f"... [TRUNCATED, total {len(c)} chars]"
+    return payload if payload else None
 
 
 def process_data(
-        inputs: Optional[List[Union[pd.DataFrame, str]]],
-        output_columns: List[Dict[str, str]],
-        additional_instructions: Optional[str] = None,
-        model_name: str = "google_genai:gemini-3-flash-preview",
-        main_dataset: Optional[pd.DataFrame] = None,
-        files: Optional[List[Tuple[str, bytes]]] = None,
+    input_files: Sequence[Path | str],
+    output_columns: List[Dict[str, str]],
+    additional_instructions: Optional[str] = None,
+    example_output_path: Optional[Path | str] = None,
+    model_name: str = "anthropic:claude-opus-4-6",
+    subagent_model_name: Optional[str] = None,
+    save_output_dir: Optional[Path | str] = None,
+    on_stream_chunk: Optional[Callable[[str, dict], None]] = None,
 ) -> tuple[pd.DataFrame, List[Dict[str, str]]]:
     """
-    Process input data using a Deep Agent and return a DataFrame.
-
-    Args:
-        inputs: A list of DataFrames or strings to be processed.
-        output_columns: A list of dicts, each with 'name' and 'description' for output columns.
-        additional_instructions: Optional additional help for the agent.
-        model_name: The name of the model to use (default: "google_genai:gemini-3-flash-preview").
-
-    Returns:
-        A pandas DataFrame with the requested columns.
+    Main entry point: process input CSVs and produce output.csv with the requested columns.
+    Optionally accepts a validated_sample.csv (example_output_path) to guide the agent.
+    When save_output_dir is None, saves output to data/output/ with a timestamped filename.
     """
     logger.info("Starting data processing task")
-    # Create a temporary directory to act as the agent's workspace
+
+    # Resolve all input paths to absolute paths (handle ~ and relative paths)
+    resolved_input_files: List[Path] = []
+    current_dir = Path.cwd()
+    for raw_path in input_files:
+        source_path = Path(raw_path).expanduser()
+        if not source_path.is_absolute():
+            source_path = (current_dir / source_path).resolve()
+        else:
+            source_path = source_path.resolve()
+        resolved_input_files.append(source_path)
+
+    # Generate run timestamp for pairing input/output saves
+    run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    # Save input files to data/input/ before run
+    DATA_INPUT_DIR.mkdir(parents=True, exist_ok=True)
+    saved_input_paths: List[Path] = []
+    for i, source_path in enumerate(resolved_input_files):
+        if source_path.exists() and source_path.is_file():
+            ext = source_path.suffix or ".csv"
+            dest_name = f"input_{run_timestamp}_{i}{ext}"
+            dest_path = DATA_INPUT_DIR / dest_name
+            shutil.copy2(source_path, dest_path)
+            saved_input_paths.append(dest_path)
+    if saved_input_paths:
+        logger.info("Inputs saved to {}", [str(p) for p in saved_input_paths])
+
+    # Create isolated temp workspace; agent works inside it and produces output.csv
     with tempfile.TemporaryDirectory() as workspace_root:
-        logger.debug(f"Workspace root created at: {workspace_root}")
-        # Change current working directory to workspace_root for PythonREPLTool
         original_cwd = os.getcwd()
-        os.chdir(workspace_root)
-        logger.debug(f"Changed CWD to: {workspace_root}")
+        os.chdir(workspace_root)  # Agent runs in workspace so paths resolve correctly
+
+        # Open debug log file (append mode so multi-run / two-phase runs accumulate)
+        log_path = DEBUG_LOG_PATH
+        debug_file: Optional[TextIO] = None
+        loguru_sink_id: Optional[int] = None
+        try:
+            debug_file = open(log_path, "a", encoding="utf-8")
+            loguru_sink_id = logger.add(
+                log_path,
+                mode="a",
+                format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+            )
+            subagent_model = subagent_model_name or "openai:gpt-5.4"
+            _debug_log(
+                debug_file,
+                f"RUN START @ {datetime.now().isoformat()}",
+                f"model={model_name}\nsubagent_model={subagent_model}\n"
+                f"input_files={[str(p) for p in resolved_input_files]}\n"
+                f"example_output_path={example_output_path}\n"
+                f"workspace={workspace_root}",
+                truncate=False,
+            )
+        except OSError as e:
+            logger.warning("Could not open debug log file: {}", e)
 
         try:
-            # Prepare inputs
-            input_files_info: List[str] = []
+            copied_files: List[str] = []
 
-            combined_inputs: List[Union[pd.DataFrame, str]] = []
+            # Copy each input file into workspace (avoid name clashes with _1, _2, etc.)
+            for i, source_path in enumerate(resolved_input_files):
+                if not source_path.exists() or not source_path.is_file():
+                    raise FileNotFoundError(
+                        f"Input file not found or not a file: {source_path}"
+                    )
 
-            if main_dataset is not None:
-                combined_inputs.append(main_dataset)
+                candidate_name = source_path.name or f"input_{i}"
+                destination_path = Path(workspace_root) / candidate_name
+                counter = 1
+                while destination_path.exists():
+                    destination_path = (
+                        Path(workspace_root)
+                        / f"{source_path.stem}_{counter}{source_path.suffix}"
+                    )
+                    counter += 1
 
-            if inputs:
-                combined_inputs.extend(inputs)
+                shutil.copy2(source_path, destination_path)
+                copied_files.append(destination_path.name)
 
-            for i, item in enumerate(combined_inputs):
-                if isinstance(item, pd.DataFrame):
-                    filename = f"input_{i}.csv"
-                    filepath = os.path.join(workspace_root, filename)
-                    item.to_csv(filepath, index=False)
-                    input_files_info.append(f"- {filename} (DataFrame input {i})")
-                    logger.debug(f"Input DataFrame {i} saved as {filename}")
-                elif isinstance(item, str):
-                    filename = f"input_{i}.txt"
-                    filepath = os.path.join(workspace_root, filename)
-                    with open(filepath, "w") as f:
-                        f.write(item)
-                    input_files_info.append(f"- {filename} (String input {i})")
-                    logger.debug(f"Input String {i} saved as {filename}")
+                try:
+                    content = destination_path.read_text(
+                        encoding="utf-8", errors="ignore"
+                    )
+                except Exception:
+                    pass  # Non-text files: ignore read errors
 
-            # Save any additional uploaded files directly into the workspace
-            if files:
-                for original_name, content in files:
-                    safe_name = os.path.basename(original_name) or "uploaded_file"
-                    base, ext = os.path.splitext(safe_name)
-                    candidate_name = safe_name
-                    target_path = os.path.join(workspace_root, candidate_name)
-                    counter = 1
-                    while os.path.exists(target_path):
-                        candidate_name = f"{base}_{counter}{ext}"
-                        target_path = os.path.join(workspace_root, candidate_name)
-                        counter += 1
+            # Two-phase scaling: add validated sample as reference for the agent
+            if example_output_path:
+                ex_path = Path(example_output_path).expanduser().resolve()
+                if not ex_path.is_absolute():
+                    ex_path = (current_dir / ex_path).resolve()
+                if ex_path.exists() and ex_path.is_file():
+                    dest = Path(workspace_root) / "validated_sample.csv"
+                    shutil.copy2(ex_path, dest)
+                    copied_files.append("validated_sample.csv")
 
-                    with open(target_path, "wb") as f:
-                        f.write(content)
-
-                    input_files_info.append(f"- {candidate_name} (Uploaded file)")
-                    logger.debug(f"Uploaded file saved as {candidate_name}")
-
-            # Format output columns instructions
-            columns_info = "\n".join([f"- {col['name']}: {col['description']}" for col in output_columns])
-
-            # Prepare system prompt - General instructions only
-            system_prompt = """You are a data processing agent. Your goal is to process input files provided by the user and create a final CSV file named 'output.csv'.
-
-Instructions for output:
-- Read the input files using pandas.
-- Process the data according to the column descriptions provided in the user's request. 
-- Use the Python REPL tool to perform data manipulation and to save the final result as 'output.csv' in the current directory.
-- Use the internet_search tool to perform web searches.
-- Use the fetch_html tool to fetch information from web pages.
-- Use your write_todos tool to write a list of TODOs for the next steps.
-- Each time you use a tool, explain what you are doing and why.
-- The final 'output.csv' should contain the processed data with the specified columns.
-- Ensure that the final file is saved as 'output.csv'.
-"""
-
-            # Prepare the user prompt with specific inputs and instructions
-            initial_message = f"""Start processing the data now. 
-
-Input files available in your workspace:
-{"\n".join(input_files_info)}
-
-The 'output.csv' MUST have the following columns. 
-IMPORTANT: The column description acts as a detailed instruction for the task you need to perform to populate that column.
-{columns_info}
-"""
-
-            if additional_instructions:
-                initial_message += f"\nAdditional instructions:\n{additional_instructions}"
-
-            # Initialize the agent with the specified backend and Python REPL tool
-            # We set virtual_mode=False to allow the agent to work with the local temporary directory
-            backend = FilesystemBackend(root_dir=workspace_root, virtual_mode=False)
-
-            logger.info(f"Creating deep agent with model: {model_name}")
-
-            agent = create_deep_agent(
-                model=model_name,
-                tools=[PythonREPLTool(), fetch_html],
-                system_prompt=system_prompt,
-                backend=backend,
-                # subagents=subagents
+            # Build column spec string for the prompt (name + description per column)
+            columns_info = "\n".join(
+                [f"- {col['name']}: {col['description']}" for col in output_columns]
             )
 
-            # Run the agent in streaming mode
-            logger.info("Invoking agent in streaming mode...")
-            seen_message_ids = set()
-            result = {}
-            for chunk in agent.stream(
-                {"messages": [HumanMessage(content=initial_message)]},
-                config={"configurable": {"thread_id": "data_proc_session"}},
-                stream_mode="values"
-            ):
-                result = chunk
-                if "messages" in chunk:
-                    for msg in chunk["messages"]:
-                        msg_id = getattr(msg, "id", str(id(msg)))
-                        if msg_id not in seen_message_ids:
-                            seen_message_ids.add(msg_id)
-                            role = getattr(msg, "type", "unknown") if not isinstance(msg, dict) else msg.get("role", "unknown")
-                            content = getattr(msg, "content", "") if not isinstance(msg, dict) else msg.get("content", "")
+            # Initial user message: lists workspace files; include column spec only when columns are defined
+            if output_columns:
+                initial_message = f"""Start processing the data now.
 
-                            if content:
-                                if role == "tool":
-                                    tool_name = "unknown"
-                                    tool_calls = getattr(msg, "tool_calls", None)
-                                    if tool_calls:
-                                        first_tc = tool_calls[0]
-                                        if isinstance(first_tc, dict):
-                                            tool_name = first_tc.get("name", "unknown")
-                                        else:
-                                            tool_name = getattr(first_tc, "name", "unknown")
-                                    logger.info(f"[{role} - {tool_name}] {str(content)[:100]}")
-                                else:
-                                    logger.info(f"[{role}] {content}")
+Input files available in your workspace:
+{chr(10).join([f"- {name}" for name in copied_files])}
 
-                            # Log tool calls if present in the message
-                            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                                for tc in msg.tool_calls:
-                                    if isinstance(tc, dict):
-                                        tool_name = tc.get("name", "unknown")
-                                        args = str(tc.get("args", ""))
-                                    else:
-                                        tool_name = getattr(tc, "name", "unknown")
-                                        args = str(getattr(tc, "args", ""))
-                                    summarized_args = (args[:20] + "...") if len(args) > 20 else args
-                                    logger.info(f"   Tool Call: {tool_name} with args: {summarized_args}")
-
-            logger.info("Agent invocation completed.")
-
-            # After execution, check if output.csv exists in the workspace
-            output_path = os.path.join(workspace_root, "output.csv")
-            if os.path.exists(output_path):
-                logger.info("Found output.csv, reading result...")
-                return pd.read_csv(output_path), result
+The 'output.csv' MUST have the following columns.
+IMPORTANT: Each column description is a strict instruction for how to populate that column.
+{columns_info}
+"""
             else:
-                # Log directory contents for debugging
-                files = os.listdir(workspace_root)
-                logger.error(f"output.csv not found in {workspace_root}. Files in workspace: {files}")
-                raise RuntimeError("Agent failed to produce 'output.csv'. Please check the agent's logic and inputs.")
+                initial_message = f"""Start processing the data now.
+
+Input files available in your workspace:
+{chr(10).join([f"- {name}" for name in copied_files])}
+
+Create output.csv based on the input files. Infer the structure and content from the data and any additional instructions below.
+"""
+
+            # System prompt: tells the agent its role, tools usage, and delegation policy
+            system_prompt = """You are a data processing agent. Your goal is to process input files and create a final CSV file named 'output.csv'.
+
+Efficiency rules:
+- Use file paths relative to the workspace (e.g. input.csv, validated_sample.csv). Do not invent or validate full system paths.
+- Avoid retrying the same URL or tool call more than once unless you have a clear reason.
+- Do not reverse-engineer JavaScript or config endpoints. If Fetch_page_content or Fetch_HTML_from_URL fails (403, 404, etc.), use Fetch_wayback_page to try an archived snapshot instead.
+- Prefer Fetch_wayback_page when direct fetch fails or returns empty content.
+
+General instructions:
+- Read input files with pandas.
+- Use PythonREPLTool for data manipulation and to save the final 'output.csv' in the current directory.
+- Use Internet_search when web search is needed.
+- Use Fetch_page_content first for most pages; use Fetch_HTML_from_URL when cleaned content is not enough.
+- Keep tool-use explanations brief and practical.
+- Use write_todos to track next actions when task complexity is high.
+- Ensure 'output.csv' contains the required columns and is saved before ending.
+- Before sending the final 'output.csv', ensure all urls in the file exist and are accessible (i.e. not 404).
+- When the output requires image URLs and you have local image files in the workspace, use the Upload_file_gcs tool.
+- When 'input_images.csv' is present, it lists image names and their GCS URLs (image_name, image_url columns). Use those URLs directly; you do not need to upload local images.
+
+Web fetching delegation policy (mandatory):
+- When you have to retrieve information from similar urls, delegate the task to subagents. Only do the fetching once to ensure its feasibility. 
+  1) fetch one representative URL yourself first to validate extraction logic,
+  2) then delegate the remaining URL extraction workload to one or more task subagents,
+  3) aggregate subagent outputs 
+- For large batches, prefer parallel subagent calls with independent URL chunks.
+"""
+
+            # Append optional user instructions (e.g. extraction rules for a use case)
+            if additional_instructions:
+                initial_message += (
+                    f"\nAdditional instructions:\n{additional_instructions}"
+                )
+
+            # Two-phase: tell agent to use validated_sample.csv as format reference
+            if example_output_path:
+                initial_message += """
+
+REFERENCE OUTPUT: The file 'validated_sample.csv' contains validated output from a prior run on a subset of data.
+Use it as a strict reference for column format, extraction logic, and URL structure. Process the remaining input files accordingly.
+"""
+
+            logger.info("Workspace ready with {} file(s)", len(copied_files))
+
+            # Write full prompts and workspace info to debug log
+            if debug_file:
+                _debug_log(debug_file, "COPIED FILES IN WORKSPACE", copied_files, truncate=False)
+                _debug_log(debug_file, "SYSTEM PROMPT (sent to main agent)", system_prompt, truncate=False)
+                _debug_log(debug_file, "INITIAL MESSAGE (sent to main agent)", initial_message, truncate=False)
+
+            # DeepAgents: main agent + subagent for URL batch fetching (reduces context size)
+            backend = FilesystemBackend(root_dir=workspace_root, virtual_mode=True)
+            subagents = [
+                SubAgent(
+                    name="web_fetch_batch_worker",
+                    description=(
+                        "Use proactively for URL-heavy web extraction tasks. Ideal when processing more than 5 URLs, so the main agent keeps a small context."
+                    ),
+                    system_prompt=(
+                        "You are a sub-agent specialized in web fetching for CSV enrichment. Focus on the assigned URLs and return concise structured results."
+                    ),
+                    tools=[fetch_html, fetch_wayback_page],
+                    model=subagent_model,
+                    middleware=[
+                            ToolCallLimitMiddleware(
+                                run_limit=6,  # e.g. max 15 fetch_html calls per delegation
+                                exit_behavior="continue",  # block exceeded tools, model returns best effort
+                                            )
+                                ],
+                ),
+            ]  # Subagent handles heavy URL extraction; main agent delegates and aggregates
+            agent = create_deep_agent(
+                model=model_name,
+                tools=[
+                    PythonREPLTool(),
+                    upload_file_gcs,
+                    internet_search,
+                    fetch_page_content,
+                    fetch_html,
+                    fetch_wayback_page,
+                ],
+                system_prompt=system_prompt,
+                backend=backend,
+                subagents=subagents,
+            )  # PythonREPL, search, fetch_page_content, fetch_html
+
+            logger.info("Invoking agent stream")
+            message_log = []
+            RATE_LIMIT_RETRIES = 3
+            RATE_LIMIT_WAIT = 65  # seconds (token-per-minute limit resets ~every minute)
+
+            for attempt in range(RATE_LIMIT_RETRIES):
+                try:
+                    # Stream agent responses; capture final state and log model/tool activity
+                    for stream_mode, chunk in agent.stream(
+                        {"messages": [HumanMessage(content=initial_message)]},
+                        config={"configurable": {"thread_id": "data_proc_session"}},
+                        stream_mode=["updates", "values"],
+                    ):
+                        # "values" = full state snapshot; "updates" = incremental model/tool output
+                        # stream_mode can be a tuple for namespaced events (e.g. subagent streams)
+                        if stream_mode == "values" or stream_mode == ("values",):
+                            message_log = chunk  # Keep latest state for UI display
+                            continue
+
+                        if on_stream_chunk and stream_mode in ("updates", ("updates",)):
+                            payload = _serialize_chunk_for_sse(chunk)
+                            if payload:
+                                on_stream_chunk(str(stream_mode), payload)
+
+                        if debug_file and stream_mode not in ("updates", ("updates",)):
+                            _debug_log(
+                                debug_file,
+                                f"STREAM MODE (may indicate subagent): {stream_mode}",
+                                list(chunk.keys()) if isinstance(chunk, dict) else str(chunk)[:500],
+                                truncate=False,
+                            )
+
+                        # Log model reasoning and tool calls for debugging/transparency
+                        if not chunk.get("model") and not chunk.get("tools"):
+                            logger.debug("Received chunk: {}", chunk)
+                            if debug_file and chunk:
+                                _debug_log(
+                                    debug_file,
+                                    "STREAM CHUNK (other)",
+                                    {k: str(v)[:500] for k, v in chunk.items()},
+                                    truncate=False,
+                                )
+
+                        if model_chunk := chunk.get("model"):
+                            for msg in model_chunk.get("messages", []):
+                                msg: AIMessage
+                                if msg.content:
+                                    text = msg.content if isinstance(msg.content, str) else (
+                                        msg.content[0].get("text", str(msg.content)) if msg.content else ""
+                                    )
+                                    logger.info("Model - {}", text[:100] + "..." if len(str(text)) > 100 else text)
+                                    if debug_file:
+                                        _debug_log(debug_file, "MAIN AGENT (AI message)", text)
+                                if msg.tool_calls:
+                                    for tc in msg.tool_calls:
+                                        tc: dict
+                                        logger.info("Model - Tool call: {}", tc.get("name", "?"))
+                                        if debug_file:
+                                            _debug_log(
+                                                debug_file,
+                                                f"MAIN AGENT -> TOOL CALL: {tc.get('name', '?')}",
+                                                {"args": tc.get("args", {}), "id": tc.get("id")},
+                                                truncate=False,
+                                            )
+                        if tool_chunk := chunk.get("tools"):
+                            for msg in tool_chunk.get("messages", []):
+                                msg: ToolMessage
+                                logger.info(
+                                    "Tool {} - {}...", msg.name, str(msg.content)[:50]
+                                )
+                                if debug_file:
+                                    _debug_log(
+                                        debug_file,
+                                        f"TOOL RESULT: {msg.name}",
+                                        msg.content,
+                                    )
+                        if on_stream_chunk and stream_mode in ("updates", ("updates",)):
+                            payload = _serialize_chunk_for_sse(chunk)
+                            if payload:
+                                on_stream_chunk(str(stream_mode), payload)
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if attempt < RATE_LIMIT_RETRIES - 1 and ("429" in err_str or "rate_limit" in err_str):
+                        wait = RATE_LIMIT_WAIT
+                        if on_stream_chunk:
+                            on_stream_chunk("retry", {"message": f"Rate limit (429), waiting {wait}s before retry {attempt + 2}/{RATE_LIMIT_RETRIES}"})
+                        logger.warning(
+                            "Rate limit (429), waiting {}s before retry {}/{}",
+                            wait,
+                            attempt + 2,
+                            RATE_LIMIT_RETRIES,
+                        )
+                        if on_stream_chunk:
+                            on_stream_chunk("retry", {"message": f"Rate limit (429), waiting {wait}s before retry {attempt + 2}/{RATE_LIMIT_RETRIES}"})
+                        time.sleep(wait)
+                    else:
+                        raise
+
+            # Agent must produce output.csv; fail if missing
+            output_path = Path(workspace_root) / "output.csv"
+            if not output_path.exists():
+                logger.error(
+                    "output.csv not found. Workspace files: {}",
+                    sorted(os.listdir(workspace_root)),
+                )
+                raise RuntimeError(
+                    "Agent failed to produce 'output.csv'. Please check the agent's logic and inputs."
+                )
+
+            result_df = pd.read_csv(output_path)  # Return parsed CSV + message log for UI
+            result_df = migrate_image_urls_in_dataframe(result_df)
+            logger.info("Migrated image URLs to GCS")
+            logger.info(
+                "Agent completed: {} row(s), {} column(s), {} logged message(s)",
+                len(result_df),
+                len(result_df.columns),
+                len(message_log),
+            )
+
+            # Save output to data/output/ with same timestamp as inputs
+            out_dir = Path(save_output_dir).expanduser().resolve() if save_output_dir else DATA_OUTPUT_DIR
+            out_dir.mkdir(parents=True, exist_ok=True)
+            saved_path = out_dir / f"output_{run_timestamp}.csv"
+            result_df.to_csv(saved_path, index=False)
+            logger.info("Output saved to {}", saved_path)
+
+            if debug_file:
+                _debug_log(
+                    debug_file,
+                    "RUN COMPLETE",
+                    f"rows={len(result_df)}, cols={len(result_df.columns)}, messages={len(message_log)}, saved_to={saved_path}",
+                    truncate=False,
+                )
+            return result_df, message_log
         finally:
-            os.chdir(original_cwd)
-            logger.debug(f"Restored CWD to: {original_cwd}")
+            if loguru_sink_id is not None:
+                try:
+                    logger.remove(loguru_sink_id)
+                except ValueError:
+                    pass
+            if debug_file:
+                try:
+                    debug_file.close()
+                except OSError:
+                    pass
+            os.chdir(original_cwd)  # Restore cwd even on error
 
 
+def process_data_two_phase(
+    input_path: Path,
+    output_columns: List[Dict[str, str]],
+    additional_instructions: Optional[str],
+    model_name: str = "anthropic:claude-opus-4-6",
+    subagent_model_name: Optional[str] = None,
+    sample_size: int = 5,
+    validated_phase1_df: Optional[pd.DataFrame] = None,
+) -> tuple[
+    Optional[pd.DataFrame],
+    Optional[pd.DataFrame],
+    List,
+    List,
+]:
+    """
+    Two-phase processing for scaling: Phase 1 runs on first N rows; Phase 2 runs on
+    remaining rows using validated Phase 1 output as reference context.
+
+    When validated_phase1_df is None: run Phase 1 only. Returns (phase1_df, None, msgs, []).
+    When validated_phase1_df is provided: run Phase 2 only. Returns (None, phase2_df, [], msgs).
+    """
+    # Ensure input exists
+    input_path = Path(input_path).expanduser().resolve()
+    if not input_path.exists() or not input_path.is_file():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    full_df = pd.read_csv(input_path)
+
+    # Phase 1: process first N rows, return sample output
+    if validated_phase1_df is None:
+        sample_df = full_df.head(sample_size)  # First 5 rows
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline=""
+        ) as f:
+            sample_df.to_csv(f, index=False)
+            sample_path = Path(f.name)
+        try:
+            phase1_df, phase1_messages = process_data(  # Single run on sample
+                input_files=[sample_path],
+                output_columns=output_columns,
+                additional_instructions=additional_instructions,
+                model_name=model_name,
+                subagent_model_name=subagent_model_name,
+            )
+            return phase1_df, None, phase1_messages, []
+        finally:
+            sample_path.unlink(missing_ok=True)  # Cleanup temp file
+
+    # Phase 2: process remaining rows with validated sample as reference
+    remaining_df = full_df.iloc[sample_size:]
+    if remaining_df.empty:  # Input had <= sample_size rows
+        return None, pd.DataFrame(), [], []
+
+    # Write remaining rows and validated sample to temp files for process_data
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".csv", delete=False, newline=""
+    ) as f_rem:
+        remaining_df.to_csv(f_rem, index=False)
+        remaining_path = Path(f_rem.name)
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".csv", delete=False, newline=""
+    ) as f_val:
+        validated_phase1_df.to_csv(f_val, index=False)
+        validated_path = Path(f_val.name)
+
+    try:
+        phase2_df, phase2_messages = process_data(  # Run with example_output_path
+            input_files=[remaining_path],
+            output_columns=output_columns,
+            additional_instructions=additional_instructions,
+            example_output_path=validated_path,
+            model_name=model_name,
+            subagent_model_name=subagent_model_name,
+        )
+        return None, phase2_df, [], phase2_messages
+    finally:
+        remaining_path.unlink(missing_ok=True)  # Cleanup temp files
+        validated_path.unlink(missing_ok=True)
