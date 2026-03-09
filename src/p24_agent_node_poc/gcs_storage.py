@@ -16,6 +16,7 @@ from retry import retry
 
 BUCKET_NAME = "presti-tmp-test"
 HAITHEM_PREFIX = "haithem"
+IMAGES_PREFIX = f"{HAITHEM_PREFIX}/images"
 HISTORY_BLOB = f"{HAITHEM_PREFIX}/uploads_history.json"
 OUTPUTS_PREFIX = f"{HAITHEM_PREFIX}/outputs"
 RUNS_HISTORY_BLOB = f"{HAITHEM_PREFIX}/runs_history.json"
@@ -43,6 +44,21 @@ def _upload_blob_from_memory(
         blob.upload_from_string(contents)
     else:
         blob.upload_from_string(contents, content_type=content_type)
+
+
+@retry(exceptions=(SSLError, RequestsConnectionError), tries=3, delay=1, backoff=2)
+def upload_image_from_bytes(
+    contents: bytes,
+    blob_path: str,
+    content_type: str,
+) -> str:
+    """Upload image bytes to haithem/images/{blob_path}. Returns public URL."""
+    full_path = f"{IMAGES_PREFIX}/{blob_path}"
+    client = get_storage_client()
+    bucket = client.bucket(BUCKET_NAME)
+    blob = bucket.blob(full_path)
+    blob.upload_from_string(contents, content_type=content_type)
+    return blob.public_url
 
 
 @retry(exceptions=(SSLError, RequestsConnectionError), tries=3, delay=1, backoff=2)

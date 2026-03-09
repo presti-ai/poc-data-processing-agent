@@ -1,20 +1,26 @@
 """
-Custom tools for the data processing agent: web search and URL fetching.
+Custom tools for the data processing agent: web search, URL fetching, and image upload.
 
 - Internet_search: Tavily-powered web search for finding information.
 - Fetch_page_content: Clean text extraction via Jina Reader (bypasses some bot protection).
 - Fetch_HTML_from_URL: Raw HTML fetch with Jina fallback on 403.
 - Fetch_wayback_page: Fetch archived page from Wayback Machine when direct fetch fails.
+- Upload_image_to_GCS: Download image from URL, upload to GCS, return new public URL.
 """
 
 import os
+import re
+from datetime import datetime
 from typing import Literal
+from uuid import uuid4
 
 import requests
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from loguru import logger
 from tavily import TavilyClient
+
+from p24_agent_node_poc.gcs_storage import upload_image_from_bytes
 
 load_dotenv()
 
@@ -108,6 +114,87 @@ def fetch_html(url: str) -> str:
         return f"Request returned {resp.status_code}: {snippet}"
     logger.info("Fetch_HTML_from_URL success: {} chars", len(resp.text))
     return resp.text
+
+
+# Image magic bytes for validation
+_IMAGE_SIGNATURES = (
+    (b"\xff\xd8\xff", "image/jpeg", "jpg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png", "png"),
+    (b"GIF87a", "image/gif", "gif"),
+    (b"GIF89a", "image/gif", "gif"),
+    (b"RIFF", "image/webp", "webp"),
+)
+
+
+def _is_image_content(data: bytes) -> tuple[bool, str, str]:
+    """Check if bytes look like an image. Returns (is_valid, content_type, ext)."""
+    for sig, ct, ext in _IMAGE_SIGNATURES:
+        if data.startswith(sig):
+            return True, ct, ext
+    return False, "application/octet-stream", "bin"
+
+
+def _extension_from_url(url: str) -> str:
+    """Extract image extension from URL path."""
+    match = re.search(r"\.(jpe?g|png|gif|webp|bmp)(?:\?|$)", url, re.I)
+    if match:
+        ext = match.group(1).lower()
+        if ext == "jpeg":
+            ext = "jpg"
+        return ext
+    return "jpg"
+
+
+@tool("Upload_image_to_GCS")
+def upload_image_to_gcs(image_url: str) -> str:
+    """
+    Download an image from a URL, upload it to GCS, and return the new public URL.
+    Use this for EVERY image URL before adding it to output.csv. Do not put raw
+    external image URLs in the output—always replace them with GCS URLs from this tool.
+    """
+    if not image_url or not isinstance(image_url, str):
+        return "Error: image_url must be a non-empty string."
+    url = image_url.strip()
+    if not url.startswith("http://") and not url.startswith("https://"):
+        return f"Invalid URL (must start with http:// or https://): {url[:80]}"
+
+    logger.info("Upload_image_to_GCS invoked: url={}", url[:80] + "..." if len(url) > 80 else url)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+    except Exception as exc:
+        logger.warning("Upload_image_to_GCS download failed: {}", exc)
+        return f"Download failed: {exc}"
+
+    if not resp.ok:
+        return f"Download failed: HTTP {resp.status_code}"
+
+    data = resp.content
+    if len(data) < 12:
+        return "Downloaded content too small to be a valid image."
+
+    is_img, content_type, ext = _is_image_content(data)
+    if not is_img:
+        ext = _extension_from_url(url)
+        content_type = f"image/{ext}" if ext != "bin" else "image/jpeg"
+
+    if ext == "bin":
+        ext = "jpg"
+        content_type = "image/jpeg"
+
+    date_prefix = datetime.now().strftime("%Y-%m-%d")
+    blob_path = f"{date_prefix}_{uuid4().hex[:12]}.{ext}"
+
+    try:
+        public_url = upload_image_from_bytes(data, blob_path, content_type)
+        logger.info("Upload_image_to_GCS success: {}", public_url[:80])
+        return public_url
+    except Exception as exc:
+        logger.warning("Upload_image_to_GCS upload failed: {}", exc)
+        return f"GCS upload failed: {exc}"
 
 
 @tool("Fetch_wayback_page")

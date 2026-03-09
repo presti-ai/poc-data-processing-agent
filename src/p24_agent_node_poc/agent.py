@@ -29,7 +29,13 @@ from langchain_core.messages import (
 from langchain_experimental.tools import PythonREPLTool
 from loguru import logger
 
-from p24_agent_node_poc.tools import fetch_html, fetch_page_content, fetch_wayback_page, internet_search
+from p24_agent_node_poc.tools import (
+    fetch_html,
+    fetch_page_content,
+    fetch_wayback_page,
+    internet_search,
+    upload_image_to_gcs,
+)
 
 load_dotenv()  # Load API keys from .env (TAVILY_API_KEY, etc.)
 
@@ -245,6 +251,11 @@ General instructions:
 - Ensure 'output.csv' contains the required columns and is saved before ending.
 - Before sending the final 'output.csv', ensure all urls in the file exist and are accessible (i.e. not 404).
 
+Image URL handling (mandatory):
+- For ANY image URL you include in output.csv (product images, silo images, packshots, etc.):
+  1) Call Upload_image_to_GCS with the image URL first
+  2) Use the returned GCS URL in the output.csv, NOT the original URL
+
 Web fetching delegation policy (mandatory):
 - When you have to retrieve information from similar urls, delegate the task to subagents. Only do the fetching once to ensure its feasibility. 
   1) fetch one representative URL yourself first to validate extraction logic,
@@ -304,6 +315,7 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                     fetch_page_content,
                     fetch_html,
                     fetch_wayback_page,
+                    upload_image_to_gcs,
                 ],
                 system_prompt=system_prompt,
                 backend=backend,
