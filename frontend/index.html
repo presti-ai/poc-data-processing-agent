@@ -85,24 +85,8 @@
                 <button type="button" id="addColumn" class="btn btn-outline btn-add-col">+ Add column</button>
             </section>
 
-            <!-- Run options -->
+            <!-- Advanced settings -->
             <section class="section">
-                <div class="section-header">
-                    <div>
-                        <h2 class="section-title">Run Options</h2>
-                    </div>
-                </div>
-                <div class="option-cards">
-                    <label class="option-card" for="twoPhaseMode">
-                        <div class="option-card-top">
-                            <input type="checkbox" id="twoPhaseMode" class="option-checkbox">
-                            <div class="option-text">
-                                <div class="option-title">Sample validation mode</div>
-                                <div class="option-desc">Process the first 5 rows, review the sample output, then run on all remaining rows.</div>
-                            </div>
-                        </div>
-                    </label>
-                </div>
                 <details class="advanced-panel" id="advancedSettings">
                     <summary class="advanced-summary">Advanced settings</summary>
                     <div class="advanced-body">
@@ -135,27 +119,6 @@
                     <div class="loading-bar-fill"></div>
                 </div>
                 <div id="loadingStatus" class="loading-status" hidden></div>
-            </section>
-
-            <!-- Phase 1 validation -->
-            <section class="section card" id="phase1ValidationSection" hidden>
-                <div class="section-header">
-                    <div>
-                        <h2 class="section-title">Sample Output — Validate</h2>
-                        <p class="section-hint">Review the first 5 rows processed by the agent. Download and edit if needed, then confirm to process all remaining rows.</p>
-                    </div>
-                    <div class="badge badge-success">Phase 1 done</div>
-                </div>
-                <div id="phase1TableWrap" class="output-table-wrap"></div>
-                <div class="phase1-actions">
-                    <a id="downloadPhase1Btn" class="btn btn-outline" hidden>Download sample CSV</a>
-                    <label class="btn btn-outline upload-validated-label">
-                        Upload corrected sample
-                        <input type="file" id="validatedSampleInput" accept=".csv" hidden>
-                    </label>
-                    <button type="button" id="phase2Button" class="btn btn-primary">Looks good — process all rows →</button>
-                </div>
-                <div id="validatedSampleStatus" class="upload-feedback"></div>
             </section>
 
             <!-- Output -->

@@ -87,9 +87,6 @@ const USE_CASES = [
 let schemaRows = [];
 let presetRun = null;
 let selectedUseCase = null;
-// Two-phase state
-let phase1CsvText = null;
-let twoPhaseOriginalFiles = null; // FileList snapshot
 
 // ─── Init ────────────────────────────────────────────────────────────────────
 function init() {
@@ -102,8 +99,6 @@ function init() {
   document.getElementById("rerunButton").addEventListener("click", () => runAgent(true));
   document.getElementById("clearRerunBtn").addEventListener("click", clearRerunPreset);
   document.getElementById("clearMessagesBtn").addEventListener("click", clearMessages);
-  document.getElementById("phase2Button").addEventListener("click", runPhase2);
-  document.getElementById("validatedSampleInput").addEventListener("change", onValidatedSampleUpload);
 
   window.addEventListener("hashchange", route);
   document.querySelectorAll(".nav-link").forEach((a) => {
@@ -512,72 +507,6 @@ function showOutput(csv, sectionId = "outputSection", tableId = "outputTableWrap
   }
 }
 
-// ─── Phase 2 ──────────────────────────────────────────────────────────────────
-function onValidatedSampleUpload(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  const status = document.getElementById("validatedSampleStatus");
-  status.textContent = `✓ Loaded corrected sample: ${file.name}`;
-  // Read as text and store for phase 2
-  const reader = new FileReader();
-  reader.onload = (ev) => { phase1CsvText = ev.target.result; };
-  reader.readAsText(file);
-}
-
-async function runPhase2() {
-  if (!twoPhaseOriginalFiles) { showError("Original files not found. Please restart."); return; }
-  const validatedSampleInput = document.getElementById("validatedSampleInput");
-  let validatedCsvText = phase1CsvText;
-  // If user uploaded a corrected version, use that; otherwise use phase1 output
-  if (validatedSampleInput.files && validatedSampleInput.files.length > 0) {
-    validatedCsvText = await readFileAsText(validatedSampleInput.files[0]);
-  }
-  if (!validatedCsvText) { showError("No validated sample found."); return; }
-
-  setLoading(true, "Processing remaining rows…");
-  clearMessages();
-
-  const formData = new FormData();
-  for (let i = 0; i < twoPhaseOriginalFiles.length; i++) {
-    formData.append("files", twoPhaseOriginalFiles[i]);
-  }
-  // Append validated_sample.csv as a file
-  const sampleBlob = new Blob([validatedCsvText], { type: "text/csv" });
-  formData.append("files", new File([sampleBlob], "validated_sample.csv", { type: "text/csv" }));
-
-  formData.append("history_file_ids", JSON.stringify([]));
-  formData.append("output_columns", JSON.stringify(getOutputColumns()));
-  formData.append("additional_instructions", document.getElementById("additionalInstructions").value || "");
-  formData.append("model_name", document.getElementById("modelName").value);
-  formData.append("subagent_model_name", document.getElementById("subagentModelName").value);
-  formData.append("skip_rows", "5");
-
-  await streamRun(formData, (csv) => {
-    // Merge phase1 + phase2
-    const merged = mergeCsv(phase1CsvText, csv);
-    showOutput(merged);
-    document.getElementById("phase1ValidationSection").hidden = true;
-  });
-}
-
-function mergeCsv(csv1, csv2) {
-  const rows1 = csv1.trim().split("\n");
-  const rows2 = csv2.trim().split("\n");
-  // header from csv1, data from both
-  const header = rows1[0];
-  const data1 = rows1.slice(1);
-  const data2 = rows2.slice(1);
-  return [header, ...data1, ...data2].join("\n");
-}
-
-function readFileAsText(file) {
-  return new Promise((resolve) => {
-    const r = new FileReader();
-    r.onload = (e) => resolve(e.target.result);
-    r.readAsText(file);
-  });
-}
-
 // ─── Run agent ────────────────────────────────────────────────────────────────
 async function runAgent(isRerun) {
   const fileInput = document.getElementById("fileInput");
@@ -593,7 +522,6 @@ async function runAgent(isRerun) {
     return;
   }
 
-  const twoPhase = document.getElementById("twoPhaseMode").checked;
   const outputColumns = getOutputColumns();
   const additionalInstructions = document.getElementById("additionalInstructions").value || "";
   const modelName = document.getElementById("modelName").value;
@@ -607,55 +535,13 @@ async function runAgent(isRerun) {
   formData.append("model_name", modelName);
   formData.append("subagent_model_name", subagentModelName);
 
-  if (twoPhase) {
-    formData.append("sample_size", "5");
-    twoPhaseOriginalFiles = files;
-  }
-
-  setLoading(true, twoPhase ? "Processing sample (5 rows)…" : "Processing…");
+  setLoading(true, "Processing…");
   clearMessages();
   document.getElementById("outputSection").hidden = true;
-  document.getElementById("phase1ValidationSection").hidden = true;
 
   await streamRun(formData, (csv) => {
-    if (twoPhase) {
-      // Show phase 1 validation section
-      phase1CsvText = csv;
-      showPhase1(csv);
-    } else {
-      showOutput(csv);
-    }
+    showOutput(csv);
   });
-}
-
-function showPhase1(csv) {
-  setLoading(false);
-  const section = document.getElementById("phase1ValidationSection");
-  section.hidden = false;
-  const tableWrap = document.getElementById("phase1TableWrap");
-
-  const rows = csv.trim().split("\n");
-  if (rows.length === 0) { tableWrap.innerHTML = "<p>No data</p>"; return; }
-  const headers = parseCSVLine(rows[0]);
-  const data = rows.slice(1).map((r) => parseCSVLine(r));
-  let html = "<table><thead><tr>";
-  headers.forEach((h) => (html += `<th>${escapeHtml(h)}</th>`));
-  html += "</tr></thead><tbody>";
-  data.forEach((row) => {
-    html += "<tr>";
-    row.forEach((cell) => (html += `<td title="${escapeHtml(cell)}">${escapeHtml(cell)}</td>`));
-    html += "</tr>";
-  });
-  html += "</tbody></table>";
-  tableWrap.innerHTML = html;
-
-  const dl = document.getElementById("downloadPhase1Btn");
-  const blob = new Blob([csv], { type: "text/csv" });
-  dl.href = URL.createObjectURL(blob);
-  dl.download = "sample_output.csv";
-  dl.hidden = false;
-
-  section.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 async function streamRun(formData, onDone) {

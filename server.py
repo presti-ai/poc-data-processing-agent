@@ -81,7 +81,6 @@ async def _run_agent_sse(
     start_time: float,
     input_infos: list[dict],
     params: dict,
-    example_output_path: Path | None = None,
 ):
     """Async generator that yields SSE events from the agent run."""
     queue: Queue = Queue()
@@ -102,7 +101,6 @@ async def _run_agent_sse(
                 model_name=model_name,
                 subagent_model_name=subagent_model_name or None,
                 on_stream_chunk=on_chunk,
-                example_output_path=example_output_path,
             )
             csv_str = result_df.to_csv(index=False)
             try:
@@ -263,9 +261,6 @@ async def api_run(request: Request):
     additional_instructions = form.get("additional_instructions", "") or ""
     model_name = form.get("model_name", "anthropic:claude-opus-4-6") or "anthropic:claude-opus-4-6"
     subagent_model_name = form.get("subagent_model_name", "openai:gpt-5.4") or "openai:gpt-5.4"
-    sample_size = int(form.get("sample_size", "0") or "0")
-    skip_rows = int(form.get("skip_rows", "0") or "0")
-
     try:
         history_gcs_uris = json.loads(history_file_ids) if history_file_ids else []
     except json.JSONDecodeError:
@@ -398,35 +393,6 @@ async def api_run(request: Request):
                         i for _, i in other_entries
                     ]
 
-        # Detect validated_sample.csv and separate it from agent inputs
-        example_output_path: Path | None = None
-        clean_paths = []
-        clean_infos = []
-        for path, info in zip(input_paths, input_infos):
-            if path.name == "validated_sample.csv":
-                example_output_path = path
-            else:
-                clean_paths.append(path)
-                clean_infos.append(info)
-        input_paths = clean_paths
-        input_infos = clean_infos
-
-        # Slice CSV for sample_size or skip_rows
-        if (sample_size > 0 or skip_rows > 0) and input_paths:
-            for path in input_paths:
-                if path.suffix.lower() == ".csv":
-                    try:
-                        import pandas as _pd
-                        df = _pd.read_csv(path)
-                        if sample_size > 0:
-                            df = df.head(sample_size)
-                        elif skip_rows > 0:
-                            df = df.iloc[skip_rows:]
-                        df.to_csv(path, index=False)
-                    except Exception:
-                        pass
-                    break
-
         async def stream_with_cleanup():
             try:
                 async for chunk in _run_agent_sse(
@@ -439,7 +405,6 @@ async def api_run(request: Request):
                     start_time=start_time,
                     input_infos=input_infos,
                     params=params,
-                    example_output_path=example_output_path,
                 ):
                     yield chunk
             finally:
