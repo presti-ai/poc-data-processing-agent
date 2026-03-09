@@ -90,25 +90,34 @@ let selectedUseCase = null;
 
 // ─── Init ────────────────────────────────────────────────────────────────────
 function init() {
-  renderUseCaseCards();
-  renderSchemaSection();
-  setupDropzone();
+  try {
+    renderUseCaseCards();
+    renderSchemaSection();
+    setupDropzone();
 
-  document.getElementById("addColumn").addEventListener("click", addColumn);
-  document.getElementById("runButton").addEventListener("click", () => runAgent(false));
-  document.getElementById("rerunButton").addEventListener("click", () => runAgent(true));
-  document.getElementById("clearRerunBtn").addEventListener("click", clearRerunPreset);
-  document.getElementById("clearMessagesBtn").addEventListener("click", clearMessages);
+    const addCol = document.getElementById("addColumn");
+    const runBtn = document.getElementById("runButton");
+    const rerunBtn = document.getElementById("rerunButton");
+    const clearRerun = document.getElementById("clearRerunBtn");
+    const clearMsg = document.getElementById("clearMessagesBtn");
+    if (addCol) addCol.addEventListener("click", addColumn);
+    if (runBtn) runBtn.addEventListener("click", () => runAgent(false));
+    if (rerunBtn) rerunBtn.addEventListener("click", () => runAgent(true));
+    if (clearRerun) clearRerun.addEventListener("click", clearRerunPreset);
+    if (clearMsg) clearMsg.addEventListener("click", clearMessages);
 
-  window.addEventListener("hashchange", route);
-  document.querySelectorAll(".nav-link").forEach((a) => {
-    a.addEventListener("click", (e) => {
-      e.preventDefault();
-      window.location.hash = a.getAttribute("href").slice(1);
+    window.addEventListener("hashchange", route);
+    document.querySelectorAll(".nav-link").forEach((a) => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        window.location.hash = a.getAttribute("href").slice(1);
+      });
     });
-  });
 
-  route();
+    route();
+  } catch (e) {
+    console.error("init error:", e);
+  }
 }
 
 // ─── Use Case Cards ──────────────────────────────────────────────────────────
@@ -424,13 +433,14 @@ function setLoading(loading, statusText) {
   const phase2Btn = document.getElementById("phase2Button");
   const bar = document.getElementById("loading");
   const status = document.getElementById("loadingStatus");
-
-  runBtn.disabled = loading;
-  rerunBtn.disabled = loading;
-  phase2Btn.disabled = loading;
-  bar.hidden = !loading;
-  status.hidden = !loading;
-  if (statusText) status.textContent = statusText;
+  if (runBtn) runBtn.disabled = loading;
+  if (rerunBtn) rerunBtn.disabled = loading;
+  if (phase2Btn) phase2Btn.disabled = loading;
+  if (bar) bar.hidden = !loading;
+  if (status) {
+    status.hidden = !loading;
+    if (statusText) status.textContent = statusText;
+  }
 }
 
 // ─── Messages ─────────────────────────────────────────────────────────────────
@@ -509,39 +519,49 @@ function showOutput(csv, sectionId = "outputSection", tableId = "outputTableWrap
 
 // ─── Run agent ────────────────────────────────────────────────────────────────
 async function runAgent(isRerun) {
-  const fileInput = document.getElementById("fileInput");
-  const files = fileInput.files;
-  let historyUris = [];
+  try {
+    const fileInput = document.getElementById("fileInput");
+    const files = fileInput?.files;
+    let historyUris = [];
 
-  if (isRerun && presetRun && presetRun.inputs) {
-    historyUris = presetRun.inputs.map((i) => i.gcs_uri).filter(Boolean);
+    if (isRerun && presetRun && presetRun.inputs) {
+      historyUris = presetRun.inputs.map((i) => i.gcs_uri).filter(Boolean);
+    }
+
+    if ((!files || files.length === 0) && historyUris.length === 0) {
+      alert("Please upload at least one file.");
+      return;
+    }
+
+    const outputColumns = getOutputColumns();
+    const additionalInstructionsEl = document.getElementById("additionalInstructions");
+    const additionalInstructions = additionalInstructionsEl?.value ?? "";
+    const modelNameEl = document.getElementById("modelName");
+    const modelName = modelNameEl?.value ?? "anthropic:claude-opus-4-6";
+    const subagentModelNameEl = document.getElementById("subagentModelName");
+    const subagentModelName = subagentModelNameEl?.value ?? "openai:gpt-5.4";
+
+    const formData = new FormData();
+    for (let i = 0; i < (files?.length || 0); i++) formData.append("files", files[i]);
+    formData.append("history_file_ids", JSON.stringify(historyUris));
+    formData.append("output_columns", JSON.stringify(outputColumns));
+    formData.append("additional_instructions", additionalInstructions);
+    formData.append("model_name", modelName);
+    formData.append("subagent_model_name", subagentModelName);
+
+    setLoading(true, "Processing…");
+    clearMessages();
+    const outputSection = document.getElementById("outputSection");
+    if (outputSection) outputSection.hidden = true;
+
+    await streamRun(formData, (csv) => {
+      showOutput(csv);
+    });
+  } catch (e) {
+    console.error("runAgent error:", e);
+    showError(e.message || String(e));
+    setLoading(false);
   }
-
-  if ((!files || files.length === 0) && historyUris.length === 0) {
-    alert("Please upload at least one file.");
-    return;
-  }
-
-  const outputColumns = getOutputColumns();
-  const additionalInstructions = document.getElementById("additionalInstructions").value || "";
-  const modelName = document.getElementById("modelName").value;
-  const subagentModelName = document.getElementById("subagentModelName").value;
-
-  const formData = new FormData();
-  for (let i = 0; i < (files?.length || 0); i++) formData.append("files", files[i]);
-  formData.append("history_file_ids", JSON.stringify(historyUris));
-  formData.append("output_columns", JSON.stringify(outputColumns));
-  formData.append("additional_instructions", additionalInstructions);
-  formData.append("model_name", modelName);
-  formData.append("subagent_model_name", subagentModelName);
-
-  setLoading(true, "Processing…");
-  clearMessages();
-  document.getElementById("outputSection").hidden = true;
-
-  await streamRun(formData, (csv) => {
-    showOutput(csv);
-  });
 }
 
 async function streamRun(formData, onDone) {
