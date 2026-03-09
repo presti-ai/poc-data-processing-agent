@@ -3,99 +3,201 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>P24 Agent - Manual Run</title>
+    <title>Presti Process Input Agent</title>
     <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-    <nav class="top-nav">
-        <a href="#/" class="nav-link" data-route="/">Run</a>
-        <a href="#/history" class="nav-link" data-route="/history">Run History</a>
-    </nav>
-    <div class="layout">
-        <aside class="sidebar">
-            <h2>Configuration</h2>
-            <label>Main agent model</label>
-            <select id="modelName">
-                <option value="google_genai:gemini-3.1-pro-preview">google_genai:gemini-3.1-pro-preview</option>
-                <option value="anthropic:claude-opus-4-6">anthropic:claude-opus-4-6</option>
-                <option value="anthropic:claude-sonnet-4-6">anthropic:claude-sonnet-4-6</option>
-            </select>
-            <label>Subagent model</label>
-            <select id="subagentModelName">
-                <option value="openai:gpt-5.4">openai:gpt-5.4</option>
-                <option value="openai:gpt-4o">openai:gpt-4o</option>
-                <option value="anthropic:claude-sonnet-4-6">anthropic:claude-sonnet-4-6</option>
-            </select>
-        </aside>
-        <main class="content">
-            <div id="runPage" class="page">
-            <h1>Manual Agent Run</h1>
-            <p>Upload files, define the output schema, and run the agent. Files are uploaded to GCS when you click Run.</p>
+    <header class="app-header">
+        <div class="header-brand">
+            <div class="brand-logo">P</div>
+            <span class="brand-name">Presti Process Input Agent</span>
+        </div>
+        <nav class="top-nav">
+            <a href="#/" class="nav-link" data-route="/">New Run</a>
+            <a href="#/history" class="nav-link" data-route="/history">History</a>
+        </nav>
+    </header>
 
-            <section class="section" id="rerunPresetSection" hidden>
-                <h2>Rerun preset</h2>
-                <p class="hint">Inputs and params from the selected run.</p>
-                <div id="rerunPresetInfo"></div>
-                <div class="rerun-actions">
-                    <button type="button" id="rerunButton" class="primary">Rerun</button>
-                    <button type="button" id="clearRerunBtn" class="secondary">Clear preset</button>
+    <main class="app-main">
+        <div id="runPage" class="page">
+
+            <!-- Rerun preset banner -->
+            <div id="rerunPresetSection" class="preset-banner" hidden>
+                <div class="preset-info">
+                    <div class="preset-label">Rerunning from history</div>
+                    <div id="rerunPresetInfo"></div>
                 </div>
+                <div class="preset-actions">
+                    <button type="button" id="rerunButton" class="btn btn-primary">Rerun</button>
+                    <button type="button" id="clearRerunBtn" class="btn btn-ghost">Clear</button>
+                </div>
+            </div>
+
+            <!-- Quick start -->
+            <section class="section">
+                <div class="section-header">
+                    <div>
+                        <h2 class="section-title">Quick Start</h2>
+                        <p class="section-hint">Pick a preset use case to auto-fill schema and instructions, or skip and upload your own files.</p>
+                    </div>
+                </div>
+                <div id="useCaseCards" class="usecase-grid"></div>
             </section>
 
+            <!-- Input files -->
             <section class="section">
-                <h2>Input files</h2>
-                <p class="hint">Upload .zip or multiple files (images, CSV, PDF). Files are uploaded to GCS when you click Run.</p>
-                <input type="file" id="fileInput" multiple accept=".zip,.csv,.xlsx,.xls,.txt,.pdf,.png,.jpg,.jpeg,.gif,.webp">
-                <div id="fileList" class="file-list"></div>
+                <div class="section-header">
+                    <div>
+                        <h2 class="section-title">Input Files</h2>
+                        <p class="section-hint">CSV, Excel, PDF, images or ZIP. Files are stored securely in GCS.</p>
+                    </div>
+                </div>
+                <div id="dropzone" class="dropzone">
+                    <div class="dropzone-icon">📂</div>
+                    <p class="dropzone-text"><strong>Drop files here</strong> or <button type="button" class="btn-link" id="browseBtn">browse</button></p>
+                    <p class="dropzone-hint">CSV · Excel · PDF · PNG · JPG · ZIP</p>
+                    <input type="file" id="fileInput" multiple accept=".zip,.csv,.xlsx,.xls,.txt,.pdf,.png,.jpg,.jpeg,.gif,.webp" hidden>
+                </div>
+                <div id="fileChips" class="file-chips"></div>
+                <div id="inputPreview"></div>
             </section>
 
+            <!-- Instructions -->
             <section class="section">
-                <h2>Additional instructions</h2>
-                <label class="toggle-label">
-                    <input type="checkbox" id="useInstructions">
-                    Send additional instructions
-                </label>
-                <textarea id="additionalInstructions" disabled placeholder="Describe constraints, extraction rules, and expected output behavior."></textarea>
+                <div class="section-header">
+                    <div>
+                        <h2 class="section-title">Instructions</h2>
+                        <p class="section-hint">Describe extraction rules and constraints. Leave blank to let the agent decide.</p>
+                    </div>
+                </div>
+                <textarea id="additionalInstructions" class="form-textarea" placeholder="e.g. Only extract HTTPS URLs. Leave cells blank when data is unavailable."></textarea>
             </section>
 
+            <!-- Output schema -->
             <section class="section">
-                <h2>Output schema</h2>
-                <p class="hint" id="schemaHint">No columns defined. Add columns below, or run with none—the agent will infer the output structure from the input files.</p>
-                <div class="schema-actions">
-                    <button type="button" id="addColumn">Add column</button>
-                    <button type="button" id="removeColumn">Remove last column</button>
+                <div class="section-header">
+                    <div>
+                        <h2 class="section-title">Output Schema</h2>
+                        <p class="section-hint" id="schemaHint">Define output columns, or leave empty — the agent will infer the structure.</p>
+                    </div>
                 </div>
                 <div id="schemaRows"></div>
+                <button type="button" id="addColumn" class="btn btn-outline btn-add-col">+ Add column</button>
             </section>
 
+            <!-- Run options -->
             <section class="section">
-                <button type="button" id="runButton" class="primary">Run agent</button>
-                <div id="loading" class="loading" hidden>Running agent... this may take a few minutes.</div>
+                <div class="section-header">
+                    <div>
+                        <h2 class="section-title">Run Options</h2>
+                    </div>
+                </div>
+                <div class="option-cards">
+                    <label class="option-card" for="twoPhaseMode">
+                        <div class="option-card-top">
+                            <input type="checkbox" id="twoPhaseMode" class="option-checkbox">
+                            <div class="option-text">
+                                <div class="option-title">Sample validation mode</div>
+                                <div class="option-desc">Process the first 5 rows, review the sample output, then run on all remaining rows.</div>
+                            </div>
+                        </div>
+                    </label>
+                </div>
+                <details class="advanced-panel" id="advancedSettings">
+                    <summary class="advanced-summary">Advanced settings</summary>
+                    <div class="advanced-body">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">Main agent model</label>
+                                <select id="modelName" class="form-select">
+                                    <option value="google_genai:gemini-3.1-pro-preview">Gemini 3.1 Pro (Google)</option>
+                                    <option value="anthropic:claude-opus-4-6">Claude Opus 4.6 (Anthropic)</option>
+                                    <option value="anthropic:claude-sonnet-4-6">Claude Sonnet 4.6 (Anthropic)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Subagent model</label>
+                                <select id="subagentModelName" class="form-select">
+                                    <option value="openai:gpt-5.4">GPT-5.4 (OpenAI)</option>
+                                    <option value="openai:gpt-4o">GPT-4o (OpenAI)</option>
+                                    <option value="anthropic:claude-sonnet-4-6">Claude Sonnet 4.6 (Anthropic)</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </details>
             </section>
 
-            <section class="section" id="outputSection" hidden>
-                <h2>Output</h2>
-                <div id="outputSuccess" class="success" hidden>Agent run completed.</div>
-                <div id="outputTableWrap"></div>
-                <a id="downloadLink" class="download-btn" hidden>Download output as CSV</a>
+            <!-- Run button -->
+            <section class="section run-section">
+                <button type="button" id="runButton" class="btn btn-primary btn-run">Run agent</button>
+                <div id="loading" class="loading-bar" hidden>
+                    <div class="loading-bar-fill"></div>
+                </div>
+                <div id="loadingStatus" class="loading-status" hidden></div>
             </section>
 
-            <section class="section" id="messagesSection">
-                <h2>Agent Discussion</h2>
+            <!-- Phase 1 validation -->
+            <section class="section card" id="phase1ValidationSection" hidden>
+                <div class="section-header">
+                    <div>
+                        <h2 class="section-title">Sample Output — Validate</h2>
+                        <p class="section-hint">Review the first 5 rows processed by the agent. Download and edit if needed, then confirm to process all remaining rows.</p>
+                    </div>
+                    <div class="badge badge-success">Phase 1 done</div>
+                </div>
+                <div id="phase1TableWrap" class="output-table-wrap"></div>
+                <div class="phase1-actions">
+                    <a id="downloadPhase1Btn" class="btn btn-outline" hidden>Download sample CSV</a>
+                    <label class="btn btn-outline upload-validated-label">
+                        Upload corrected sample
+                        <input type="file" id="validatedSampleInput" accept=".csv" hidden>
+                    </label>
+                    <button type="button" id="phase2Button" class="btn btn-primary">Looks good — process all rows →</button>
+                </div>
+                <div id="validatedSampleStatus" class="upload-feedback"></div>
+            </section>
+
+            <!-- Output -->
+            <section class="section card" id="outputSection" hidden>
+                <div class="section-header">
+                    <div>
+                        <h2 class="section-title">Output</h2>
+                    </div>
+                    <div id="outputSuccess" class="badge badge-success" hidden>Completed</div>
+                </div>
+                <div id="outputTableWrap" class="output-table-wrap"></div>
+                <div class="output-actions">
+                    <a id="downloadLink" class="btn btn-primary" hidden>Download CSV</a>
+                </div>
+            </section>
+
+            <!-- Agent activity -->
+            <section class="section">
+                <div class="section-header">
+                    <div>
+                        <h2 class="section-title">Agent Activity</h2>
+                    </div>
+                    <button type="button" id="clearMessagesBtn" class="btn btn-ghost btn-sm">Clear</button>
+                </div>
                 <div id="messagesPanel" class="messages-panel">
-                    <p class="info">Run the agent to display system, assistant, and tool messages.</p>
+                    <p class="empty-hint">Run the agent to see live activity here.</p>
                 </div>
             </section>
+        </div>
+
+        <!-- History page -->
+        <div id="historyPage" class="page" hidden>
+            <div class="page-header">
+                <h1 class="page-title">Run History</h1>
+                <p class="section-hint">Click a run to rerun it with the same inputs and settings.</p>
             </div>
-            <div id="historyPage" class="page" hidden>
-                <h1>Run History</h1>
-                <p class="hint">Click a row to open the Run page with preset inputs. Hover to delete.</p>
-                <div id="runsTableWrap" class="runs-table-wrap">
-                    <p class="info">Loading runs...</p>
-                </div>
+            <div id="runsTableWrap" class="runs-table-wrap">
+                <p class="empty-hint">Loading runs...</p>
             </div>
-        </main>
-    </div>
+        </div>
+    </main>
+
     <script src="/js/app.js"></script>
 </body>
 </html>
