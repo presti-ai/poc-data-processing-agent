@@ -5,10 +5,14 @@ Custom tools for the data processing agent: web search and URL fetching.
 - Fetch_page_content: Clean text extraction via Jina Reader (bypasses some bot protection).
 - Fetch_HTML_from_URL: Raw HTML fetch with Jina fallback on 403.
 - Fetch_wayback_page: Fetch archived page from Wayback Machine when direct fetch fails.
+- Upload_file_gcs: Upload a local image file from the workspace to GCS and return its public URL.
 """
 
 import os
+from datetime import datetime
+from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 import requests
 from dotenv import load_dotenv
@@ -16,7 +20,19 @@ from langchain_core.tools import tool
 from loguru import logger
 from tavily import TavilyClient
 
+from p24_agent_node_poc.gcs_storage import upload_image_from_bytes
+
 load_dotenv()
+
+# Image extension -> content type for Upload_file_gcs
+_IMAGE_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
 
 # API clients (keys from .env)
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
@@ -128,6 +144,39 @@ def fetch_wayback_page(url: str, timestamp: str = "20240101000000") -> str:
             if "returned" not in result or "success" in result.lower():
                 break
     return result
+
+
+@tool("Upload_file_gcs")
+def upload_file_gcs(file_path: str) -> str:
+    """Upload an image file from the workspace to GCS and return its public URL.
+    Use this when the output requires a URL for a local image.
+    Pass the filename relative to the workspace (e.g. TABLE_GPW037.jpg).
+    Do not use Python_REPL to upload to tmpfiles, uguu, catbox, or other services."""
+    # Sanitize: strip leading slash, use only basename to prevent path traversal
+    path = file_path.strip().lstrip("/")
+    path = Path(path).name
+    if not path:
+        return "Invalid file_path: empty or invalid."
+    ext = Path(path).suffix.lower()
+    if ext not in _IMAGE_CONTENT_TYPES:
+        return f"Unsupported image type: {ext}. Supported: {list(_IMAGE_CONTENT_TYPES.keys())}"
+    content_type = _IMAGE_CONTENT_TYPES[ext]
+    full_path = Path.cwd() / path
+    if not full_path.exists() or not full_path.is_file():
+        return f"File not found: {path}"
+    try:
+        data = full_path.read_bytes()
+    except OSError as e:
+        return f"Cannot read file {path}: {e}"
+    date_prefix = datetime.now().strftime("%Y-%m-%d")
+    blob_path = f"{date_prefix}_{uuid4().hex[:12]}{ext}"
+    try:
+        public_url = upload_image_from_bytes(data, blob_path, content_type)
+        logger.info("Upload_file_gcs success: {} -> {}", path, public_url[:80] + "...")
+        return public_url
+    except Exception as e:
+        logger.warning("Upload_file_gcs failed for {}: {}", path, e)
+        return f"GCS upload failed: {e}"
 
 
 # CLI test: run with `python -m p24_agent_node_poc.tools`

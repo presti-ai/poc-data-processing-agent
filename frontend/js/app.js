@@ -68,6 +68,25 @@ async function loadRunForRerun(runId) {
     }
     const run = await res.json();
     applyRerunPreset(run);
+
+    // Fetch and display the run's output if it exists
+    const outputs = run.outputs || [];
+    if (outputs.length > 0) {
+      const outputName = outputs[0].name;
+      if (outputName) {
+        try {
+          const outputRes = await fetch(`/api/outputs/${encodeURIComponent(outputName)}`);
+          if (outputRes.ok) {
+            const csvText = await outputRes.text();
+            showOutput(csvText);
+          }
+        } catch (err) {
+          console.warn("Could not load output for run:", err);
+        }
+      }
+    } else {
+      document.getElementById("outputSection").hidden = true;
+    }
   } catch (e) {
     clearRerunPreset();
     window.location.hash = "#/";
@@ -118,6 +137,7 @@ function clearRerunPreset() {
   document.getElementById("rerunPresetSection").hidden = true;
   document.getElementById("runButton").hidden = false;
   document.getElementById("rerunButton").hidden = true;
+  document.getElementById("outputSection").hidden = true;
   if (getRoute().page === "rerun") {
     window.location.hash = "#/";
   }

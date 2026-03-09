@@ -35,6 +35,7 @@ from p24_agent_node_poc.tools import (
     fetch_page_content,
     fetch_wayback_page,
     internet_search,
+    upload_file_gcs,
 )
 
 load_dotenv()  # Load API keys from .env (TAVILY_API_KEY, etc.)
@@ -250,6 +251,8 @@ General instructions:
 - Use write_todos to track next actions when task complexity is high.
 - Ensure 'output.csv' contains the required columns and is saved before ending.
 - Before sending the final 'output.csv', ensure all urls in the file exist and are accessible (i.e. not 404).
+- When the output requires image URLs and you have local image files in the workspace, use the Upload_file_gcs tool.
+- When 'input_images.csv' is present, it lists image names and their GCS URLs (image_name, image_url columns). Use those URLs directly; you do not need to upload local images.
 
 Web fetching delegation policy (mandatory):
 - When you have to retrieve information from similar urls, delegate the task to subagents. Only do the fetching once to ensure its feasibility. 
@@ -306,6 +309,7 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                 model=model_name,
                 tools=[
                     PythonREPLTool(),
+                    upload_file_gcs,
                     internet_search,
                     fetch_page_content,
                     fetch_html,

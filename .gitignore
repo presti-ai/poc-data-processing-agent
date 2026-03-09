@@ -37,3 +37,13 @@ htmlcov/
 log.txt
 
 *.csv
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+
+# Archives
+*.zip

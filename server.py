@@ -5,6 +5,7 @@ Run history is stored in GCS; inputs are uploaded to GCS when Run is clicked.
 """
 
 import asyncio
+import csv
 import io
 import json
 import mimetypes
@@ -32,10 +33,12 @@ from p24_agent_node_poc.gcs_storage import (
     get_run,
     list_outputs as gcs_list_outputs,
     read_runs_history,
+    upload_image_from_bytes,
     upload_to_haithem,
 )
 
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 app = FastAPI(title="P24 Agent API", version="0.1.0")
 
@@ -359,6 +362,37 @@ async def api_run(request: Request):
                 input_paths.append(dest)
             except Exception:
                 continue
+
+        # Pre-process: when 2+ images, upload to GCS, create input_images.csv, replace image inputs
+        if len(input_paths) == len(input_infos):
+            entries = list(zip(input_paths, input_infos))
+            image_entries = [(p, i) for p, i in entries if Path(i["name"]).suffix.lower() in IMAGE_EXTENSIONS]
+            other_entries = [(p, i) for p, i in entries if Path(i["name"]).suffix.lower() not in IMAGE_EXTENSIONS]
+            if len(image_entries) >= 2:
+                rows = []
+                for path, info in image_entries:
+                    try:
+                        data = path.read_bytes()
+                        content_type = _guess_content_type(info["name"]) or "image/jpeg"
+                        blob_path = f"run_inputs/{run_id}/{info['name']}"
+                        public_url = upload_image_from_bytes(data, blob_path, content_type)
+                        rows.append({"image_name": info["name"], "image_url": public_url})
+                    except Exception:
+                        continue
+                if rows:
+                    csv_path = Path(tmpdir) / "input_images.csv"
+                    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                        writer = csv.DictWriter(f, fieldnames=["image_name", "image_url"])
+                        writer.writeheader()
+                        writer.writerows(rows)
+                    csv_bytes = csv_path.read_bytes()
+                    csv_gcs_uri = upload_to_haithem(
+                        csv_bytes, f"{upload_prefix}/input_images.csv", "text/csv"
+                    )
+                    input_paths = [csv_path] + [p for p, _ in other_entries]
+                    input_infos = [{"name": "input_images.csv", "gcs_uri": csv_gcs_uri}] + [
+                        i for _, i in other_entries
+                    ]
 
         async def stream_with_cleanup():
             try:
