@@ -48,3 +48,4 @@ log.txt
 # Archives
 *.zip
 data/runs_history.json
+data/input

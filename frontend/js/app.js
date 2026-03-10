@@ -78,10 +78,9 @@ const USE_CASES = [
       { name: "source_page_url", description: "Source page where the image was found." },
       { name: "collection_note", description: "Short note if URL is placeholder or if extraction is limited." },
     ],
-    additional_instructions: "Collect lifestyle inspiration image URLs for a seed query. Prefer real life style images",
+    additional_instructions: "given the search seed and the target site, collect inspiration images containing the object, prefer real life style images for the results that put the object in realistic disposition (no silo image, or empty white background)",
   },
 ];
-
 // ─── State ───────────────────────────────────────────────────────────────────
 let schemaRows = [];
 let presetRun = null;
