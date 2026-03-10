@@ -31,8 +31,8 @@ from loguru import logger
 
 from p24_agent_node_poc.image_migration import migrate_image_urls_in_dataframe
 from p24_agent_node_poc.tools import (
+    fetch_firecrawl,
     fetch_html,
-    fetch_page_content,
     fetch_wayback_page,
     internet_search,
     upload_file_gcs,
@@ -239,14 +239,14 @@ Create output.csv based on the input files. Infer the structure and content from
 Efficiency rules:
 - Use file paths relative to the workspace (e.g. input.csv, validated_sample.csv). Do not invent or validate full system paths.
 - Avoid retrying the same URL or tool call more than once unless you have a clear reason.
-- Do not reverse-engineer JavaScript or config endpoints. If Fetch_page_content or Fetch_HTML_from_URL fails (403, 404, etc.), use Fetch_wayback_page to try an archived snapshot instead.
+- Do not reverse-engineer JavaScript or config endpoints. If Fetch_firecrawl or Fetch_HTML_from_URL fails (403, 404, etc.), use Fetch_wayback_page to try an archived snapshot instead.
 - Prefer Fetch_wayback_page when direct fetch fails or returns empty content.
 
 General instructions:
 - Read input files with pandas.
 - Use PythonREPLTool for data manipulation and to save the final 'output.csv' in the current directory.
 - Use Internet_search when web search is needed.
-- Use Fetch_page_content first for most pages; use Fetch_HTML_from_URL when cleaned content is not enough.
+- Use Fetch_firecrawl first for most pages; use Fetch_HTML_from_URL when cleaned content is not enough.
 - Keep tool-use explanations brief and practical.
 - Use write_todos to track next actions when task complexity is high.
 - Ensure 'output.csv' contains the required columns and is saved before ending.
@@ -311,14 +311,14 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                     PythonREPLTool(),
                     upload_file_gcs,
                     internet_search,
-                    fetch_page_content,
+                    fetch_firecrawl,
                     fetch_html,
                     fetch_wayback_page,
                 ],
                 system_prompt=system_prompt,
                 backend=backend,
                 subagents=subagents,
-            )  # PythonREPL, search, fetch_page_content, fetch_html
+            )  # PythonREPL, search, fetch_firecrawl, fetch_html
 
             logger.info("Invoking agent stream")
             message_log = []
