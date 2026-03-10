@@ -132,12 +132,9 @@ def scrape_firecrawl(url: str) -> ScrapeResult:
     t0 = time.perf_counter()
     try:
         app = FirecrawlApp(api_key=api_key)
-        result = app.scrape_url(url, formats=["markdown"])
+        result = app.scrape_url(url, params={"formats": ["markdown"]})
         ms = (time.perf_counter() - t0) * 1000
-        # firecrawl-py >= 1.0 returns ScrapeResponse; older versions return a dict
-        markdown = getattr(result, "markdown", None) or (
-            result.get("markdown") if isinstance(result, dict) else None
-        )
+        markdown = result.get("markdown") if isinstance(result, dict) else getattr(result, "markdown", None)
         if not markdown:
             return _make_result("firecrawl", url, success=False, status_code=None,
                                 latency_ms=ms, error="No markdown content returned")
@@ -324,8 +321,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    input_path = PROJECT_ROOT / args.url if not Path(args.urls).is_absolute() else Path(args.urls)
-    input_path = PROJECT_ROOT / args.urls  # always resolve relative to project root
+    input_path = PROJECT_ROOT / args.urls
     if not input_path.exists():
         logger.error("Input file not found: {}", input_path)
         return

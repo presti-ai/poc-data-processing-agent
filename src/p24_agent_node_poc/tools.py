@@ -165,9 +165,8 @@ def fetch_firecrawl(url: str) -> str:
         return "firecrawl-py not installed. Run: poetry add firecrawl-py"
     try:
         app = FirecrawlApp(api_key=firecrawl_api_key)
-        result = app.scrape_url(url, formats=["markdown"])
-        # firecrawl-py >= 1.0 returns a ScrapeResponse object; older versions return a dict
-        markdown = getattr(result, "markdown", None) or (result.get("markdown") if isinstance(result, dict) else None)
+        result = app.scrape_url(url, params={"formats": ["markdown"]})
+        markdown = result.get("markdown") if isinstance(result, dict) else getattr(result, "markdown", None)
         if not markdown:
             return f"Firecrawl returned no markdown content for {url}"
         logger.info("Fetch_firecrawl success: {} chars", len(markdown))
