@@ -1,10 +1,79 @@
 import os
 import shutil
+import sys
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+
+if "tavily" not in sys.modules:
+    tavily_stub = types.ModuleType("tavily")
+
+    class _StubTavilyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def search(self, *args, **kwargs):
+            return {"results": []}
+
+    tavily_stub.TavilyClient = _StubTavilyClient
+    sys.modules["tavily"] = tavily_stub
+
+if "deepagents" not in sys.modules:
+    deepagents_stub = types.ModuleType("deepagents")
+
+    class _StubSubAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    def _stub_create_deep_agent(*args, **kwargs):
+        raise RuntimeError("create_deep_agent should be patched in tests")
+
+    deepagents_stub.SubAgent = _StubSubAgent
+    deepagents_stub.create_deep_agent = _stub_create_deep_agent
+    sys.modules["deepagents"] = deepagents_stub
+
+if "deepagents.backends.filesystem" not in sys.modules:
+    backend_stub = types.ModuleType("deepagents.backends.filesystem")
+
+    class _StubFilesystemBackend:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    backend_stub.FilesystemBackend = _StubFilesystemBackend
+    sys.modules["deepagents.backends.filesystem"] = backend_stub
+
+if "langchain.agents.middleware" not in sys.modules:
+    middleware_stub = types.ModuleType("langchain.agents.middleware")
+
+    class _StubToolCallLimitMiddleware:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    middleware_stub.ToolCallLimitMiddleware = _StubToolCallLimitMiddleware
+    sys.modules["langchain.agents.middleware"] = middleware_stub
+
+if "langchain.agents" not in sys.modules:
+    agents_stub = types.ModuleType("langchain.agents")
+    agents_stub.middleware = sys.modules["langchain.agents.middleware"]
+    sys.modules["langchain.agents"] = agents_stub
+
+if "langchain" not in sys.modules:
+    langchain_stub = types.ModuleType("langchain")
+    langchain_stub.agents = sys.modules["langchain.agents"]
+    sys.modules["langchain"] = langchain_stub
+
+if "langchain_experimental.tools" not in sys.modules:
+    experimental_tools_stub = types.ModuleType("langchain_experimental.tools")
+
+    class _StubPythonREPLTool:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    experimental_tools_stub.PythonREPLTool = _StubPythonREPLTool
+    sys.modules["langchain_experimental.tools"] = experimental_tools_stub
 
 from p24_agent_node_poc.agent import process_data
 
@@ -33,7 +102,10 @@ class TestDataProcessingAgent(unittest.TestCase):
                 def stream_with_file(state, config, stream_mode="values"):
                     output_df = pd.DataFrame({"sum_A_B": [4, 6], "is_even": [True, True]})
                     output_df.to_csv(os.path.join(workspace, "output.csv"), index=False)
-                    yield {"messages": [{"role": "assistant", "content": "Done"}]}
+                    yield (
+                        "values",
+                        {"messages": [{"role": "assistant", "content": "Done"}]},
+                    )
 
                 mock_agent.stream.side_effect = stream_with_file
 
@@ -47,10 +119,11 @@ class TestDataProcessingAgent(unittest.TestCase):
                     result_df,
                     pd.DataFrame({"sum_A_B": [4, 6], "is_even": [True, True]}),
                 )
-                self.assertIsInstance(agent_messages, list)
-                self.assertTrue(any(msg.get("role") == "system" for msg in agent_messages))
+                self.assertIsInstance(agent_messages, dict)
+                messages = agent_messages.get("messages", [])
+                self.assertIsInstance(messages, list)
                 self.assertTrue(
-                    any(msg.get("role") == "assistant" and msg.get("display") == "Done" for msg in agent_messages)
+                    any(msg.get("role") == "assistant" and msg.get("content") == "Done" for msg in messages)
                 )
 
                 if os.path.exists(workspace):
@@ -76,7 +149,14 @@ class TestDataProcessingAgent(unittest.TestCase):
                 mock_temp_dir.return_value.__enter__.return_value = workspace
 
                 def stream_no_file(state, config, stream_mode="values"):
-                    yield {"messages": [{"role": "assistant", "content": "Failed to create file"}]}
+                    yield (
+                        "values",
+                        {
+                            "messages": [
+                                {"role": "assistant", "content": "Failed to create file"}
+                            ]
+                        },
+                    )
 
                 mock_agent.stream.side_effect = stream_no_file
 
@@ -108,7 +188,10 @@ class TestDataProcessingAgent(unittest.TestCase):
 
                 def stream_with_file(state, config, stream_mode="values"):
                     pd.DataFrame({"url": urls}).to_csv(os.path.join(workspace, "output.csv"), index=False)
-                    yield {"messages": [{"role": "assistant", "content": "Done"}]}
+                    yield (
+                        "values",
+                        {"messages": [{"role": "assistant", "content": "Done"}]},
+                    )
 
                 mock_agent.stream.side_effect = stream_with_file
                 process_data(
@@ -119,6 +202,8 @@ class TestDataProcessingAgent(unittest.TestCase):
 
                 system_prompt = mock_create_agent.call_args.kwargs["system_prompt"]
                 self.assertIn("delegate the task to subagents", system_prompt)
+                self.assertIn("avoid reading full html pages", system_prompt.lower())
+                self.assertIn("return compact JSON that points to local HTML file path", system_prompt)
 
                 if os.path.exists(workspace):
                     shutil.rmtree(workspace)
