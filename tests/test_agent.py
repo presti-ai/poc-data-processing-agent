@@ -109,11 +109,9 @@ class TestDataProcessingAgent(unittest.TestCase):
 
                 mock_agent.stream.side_effect = stream_with_file
 
-                result_df, agent_messages = process_data(
-                    input_files=[src_root / "input.csv", src_root / "notes.txt"],
-                    output_columns=output_columns,
-                    save_output_dir=Path(workspace) / "saved_output",
-                )
+                result_df, agent_messages = process_data(input_files=[src_root / "input.csv", src_root / "notes.txt"],
+                                                         output_columns=output_columns,
+                                                         save_output_dir=Path(workspace) / "saved_output")
 
                 pd.testing.assert_frame_equal(
                     result_df,
@@ -194,11 +192,8 @@ class TestDataProcessingAgent(unittest.TestCase):
                     )
 
                 mock_agent.stream.side_effect = stream_with_file
-                process_data(
-                    input_files=[src_root / "urls.csv"],
-                    output_columns=output_columns,
-                    save_output_dir=Path(workspace) / "saved_output",
-                )
+                process_data(input_files=[src_root / "urls.csv"], output_columns=output_columns,
+                             save_output_dir=Path(workspace) / "saved_output")
 
                 system_prompt = mock_create_agent.call_args.kwargs["system_prompt"]
                 self.assertIn("delegate the task to subagents", system_prompt)

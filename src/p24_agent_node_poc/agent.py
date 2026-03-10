@@ -5,31 +5,28 @@ Creates an isolated workspace, copies input files, invokes the deep agent with
 tools (Python REPL, web search, page fetching), and returns the produced output.csv.
 """
 
-import json
 import os
 import shutil
 import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, TextIO
+from typing import Callable, Dict, List, Optional, Sequence, TextIO
 
 import pandas as pd
-from deepagents import SubAgent, create_deep_agent
+from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
-from langchain.agents.middleware import ToolCallLimitMiddleware
 from dotenv import load_dotenv
 from langchain_core.messages import (
     AIMessage,
-    BaseMessage,
     HumanMessage,
-    messages_to_dict,
     ToolMessage,
 )
 from langchain_experimental.tools import PythonREPLTool
 from loguru import logger
 
-from agent_constants import SYSTEM_PROMPT
+from agent_constants import RATE_LIMIT_RETRIES, RATE_LIMIT_WAIT, subagents, SYSTEM_PROMPT, tools
+from agent_logging import _debug_log, _serialize_chunk_for_sse
 from p24_agent_node_poc.image_migration import migrate_image_urls_in_dataframe
 from p24_agent_node_poc.tools import (
     fetch_html,
@@ -41,57 +38,11 @@ from p24_agent_node_poc.tools import (
 
 load_dotenv()  # Load API keys from .env (TAVILY_API_KEY, etc.)
 
-# Debug log: truncate very long content to avoid huge files
-DEBUG_LOG_TRUNCATE = 8000  # chars for tool results, page content, etc.
 # Log file and data dirs in project root (derived from this module's location) so they're consistent regardless of CWD
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEBUG_LOG_PATH = _PROJECT_ROOT / "log.txt"
 DATA_INPUT_DIR = _PROJECT_ROOT / "data" / "input"
 DATA_OUTPUT_DIR = _PROJECT_ROOT / "data" / "output"
-
-
-def _debug_log(f: TextIO, section: str, content: Any, truncate: bool = True) -> None:
-    """Write a section to the debug log file."""
-    if isinstance(content, dict):
-        content = json.dumps(content, indent=2, default=str)
-    elif not isinstance(content, str):
-        content = str(content)
-    if truncate and len(content) > DEBUG_LOG_TRUNCATE:
-        content = content[:DEBUG_LOG_TRUNCATE] + f"\n... [TRUNCATED, total {len(content)} chars]"
-    f.write(f"\n{'='*60}\n{section}\n{'='*60}\n{content}\n")
-    f.flush()
-
-
-SSE_TRUNCATE = 2000  # chars for SSE payloads to avoid huge events
-
-
-def _serialize_chunk_for_sse(chunk: dict) -> Optional[dict]:
-    """Convert a stream chunk to JSON-serializable dict for SSE. Returns None if empty."""
-    payload: dict = {}
-    if model_chunk := chunk.get("model"):
-        msgs = model_chunk.get("messages", [])
-        valid = [m for m in msgs if isinstance(m, BaseMessage)]
-        if valid:
-            payload["model"] = messages_to_dict(valid)
-            # Truncate long content in payload
-            for m in payload.get("model", []):
-                d = m.get("data", {})
-                if "content" in d:
-                    c = d["content"]
-                    if isinstance(c, str) and len(c) > SSE_TRUNCATE:
-                        d["content"] = c[:SSE_TRUNCATE] + f"... [TRUNCATED, total {len(c)} chars]"
-    if tool_chunk := chunk.get("tools"):
-        msgs = tool_chunk.get("messages", [])
-        valid = [m for m in msgs if isinstance(m, BaseMessage)]
-        if valid:
-            payload["tools"] = messages_to_dict(valid)
-            for m in payload.get("tools", []):
-                d = m.get("data", {})
-                if "content" in d:
-                    c = d["content"]
-                    if isinstance(c, str) and len(c) > SSE_TRUNCATE:
-                        d["content"] = c[:SSE_TRUNCATE] + f"... [TRUNCATED, total {len(c)} chars]"
-    return payload if payload else None
 
 
 def process_data(
@@ -100,7 +51,6 @@ def process_data(
     additional_instructions: Optional[str] = None,
     example_output_path: Optional[Path | str] = None,
     model_name: str = "anthropic:claude-opus-4-6",
-    subagent_model_name: Optional[str] = None,
     save_output_dir: Optional[Path | str] = None,
     on_stream_chunk: Optional[Callable[[str, dict], None]] = None,
 ) -> tuple[pd.DataFrame, List[Dict[str, str]]]:
@@ -154,11 +104,10 @@ def process_data(
                 mode="a",
                 format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
             )
-            subagent_model = subagent_model_name or "openai:gpt-5.4"
             _debug_log(
                 debug_file,
                 f"RUN START @ {datetime.now().isoformat()}",
-                f"model={model_name}\nsubagent_model={subagent_model}\n"
+                f"model={model_name}\nsubagent_model=genai:gemini-3-flash-preview\n"
                 f"input_files={[str(p) for p in resolved_input_files]}\n"
                 f"example_output_path={example_output_path}\n"
                 f"workspace={workspace_root}",
@@ -232,9 +181,6 @@ Input files available in your workspace:
 Create output.csv based on the input files. Infer the structure and content from the data and any additional instructions below.
 """
 
-            # System prompt: tells the agent its role, tools usage, and delegation policy
-            system_prompt = SYSTEM_PROMPT
-
             # Append optional user instructions (e.g. extraction rules for a use case)
             if additional_instructions:
                 initial_message += (
@@ -253,56 +199,44 @@ Use it as a strict reference for column format, extraction logic, and URL struct
 
             # Write full prompts and workspace info to debug log
             if debug_file:
-                _debug_log(debug_file, "COPIED FILES IN WORKSPACE", copied_files, truncate=False)
-                _debug_log(debug_file, "SYSTEM PROMPT (sent to main agent)", system_prompt, truncate=False)
-                _debug_log(debug_file, "INITIAL MESSAGE (sent to main agent)", initial_message, truncate=False)
+                _debug_log(
+                    debug_file,
+                    "COPIED FILES IN WORKSPACE",
+                    copied_files,
+                    truncate=False,
+                )
+                _debug_log(
+                    debug_file,
+                    "SYSTEM PROMPT (sent to main agent)",
+                    SYSTEM_PROMPT,
+                    truncate=False,
+                )
+                _debug_log(
+                    debug_file,
+                    "INITIAL MESSAGE (sent to main agent)",
+                    initial_message,
+                    truncate=False,
+                )
 
             # DeepAgents: main agent + subagent for URL batch fetching (reduces context size)
             backend = FilesystemBackend(root_dir=workspace_root, virtual_mode=True)
-            subagents = [
-                SubAgent(
-                    name="web_fetch_batch_worker",
-                    description=(
-                        "Use proactively for URL-heavy web extraction tasks. Ideal when processing more than 5 URLs, so the main agent keeps a small context."
-                    ),
-                    system_prompt=(
-                        "You are a sub-agent specialized in web fetching for CSV enrichment. Use Fetch_HTML_from_URL / Fetch_wayback_page to save HTML to files, then extract requested information by reading the files or using PythonREPLTool. Do not return full HTML content; return concise structured results."
-                    ),
-                    tools=[fetch_html, fetch_wayback_page, PythonREPLTool()],
-                    model=subagent_model,
-                    middleware=[
-                            ToolCallLimitMiddleware(
-                                run_limit=6,  # e.g. max 15 fetch_html calls per delegation
-                                exit_behavior="continue",  # block exceeded tools, model returns best effort
-                                            )
-                                ],
-                ),
-            ]  # Subagent handles heavy URL extraction; main agent delegates and aggregates
             agent = create_deep_agent(
                 model=model_name,
-                tools=[
-                    PythonREPLTool(),
-                    upload_file_gcs,
-                    internet_search,
-                    fetch_page_content,
-                    fetch_html,
-                    fetch_wayback_page,
-                ],
-                system_prompt=system_prompt,
+                tools=tools,
+                system_prompt=SYSTEM_PROMPT,
                 backend=backend,
                 subagents=subagents,
-            )  # PythonREPL, search, fetch_page_content, fetch_html
+            )
 
             logger.info("Invoking agent stream")
             message_log = []
-            RATE_LIMIT_RETRIES = 3
-            RATE_LIMIT_WAIT = 65  # seconds (token-per-minute limit resets ~every minute)
 
             for attempt in range(RATE_LIMIT_RETRIES):
                 try:
                     # Stream agent responses; capture final state and log model/tool activity
+                    messages = [HumanMessage(content=initial_message)]
                     for stream_mode, chunk in agent.stream(
-                        {"messages": [HumanMessage(content=initial_message)]},
+                        {"messages": messages},
                         config={"configurable": {"thread_id": "data_proc_session"}},
                         stream_mode=["updates", "values"],
                     ):
@@ -321,7 +255,9 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                             _debug_log(
                                 debug_file,
                                 f"STREAM MODE (may indicate subagent): {stream_mode}",
-                                list(chunk.keys()) if isinstance(chunk, dict) else str(chunk)[:500],
+                                list(chunk.keys())
+                                if isinstance(chunk, dict)
+                                else str(chunk)[:500],
                                 truncate=False,
                             )
 
@@ -340,21 +276,39 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                             for msg in model_chunk.get("messages", []):
                                 msg: AIMessage
                                 if msg.content:
-                                    text = msg.content if isinstance(msg.content, str) else (
-                                        msg.content[0].get("text", str(msg.content)) if msg.content else ""
+                                    text = (
+                                        msg.content
+                                        if isinstance(msg.content, str)
+                                        else (
+                                            msg.content[0].get("text", str(msg.content))
+                                            if msg.content
+                                            else ""
+                                        )
                                     )
-                                    logger.info("Model - {}", text[:100] + "..." if len(str(text)) > 100 else text)
+                                    logger.info(
+                                        "Model - {}",
+                                        text[:100] + "..."
+                                        if len(str(text)) > 100
+                                        else text,
+                                    )
                                     if debug_file:
-                                        _debug_log(debug_file, "MAIN AGENT (AI message)", text)
+                                        _debug_log(
+                                            debug_file, "MAIN AGENT (AI message)", text
+                                        )
                                 if msg.tool_calls:
                                     for tc in msg.tool_calls:
                                         tc: dict
-                                        logger.info("Model - Tool call: {}", tc.get("name", "?"))
+                                        logger.info(
+                                            "Model - Tool call: {}", tc.get("name", "?")
+                                        )
                                         if debug_file:
                                             _debug_log(
                                                 debug_file,
                                                 f"MAIN AGENT -> TOOL CALL: {tc.get('name', '?')}",
-                                                {"args": tc.get("args", {}), "id": tc.get("id")},
+                                                {
+                                                    "args": tc.get("args", {}),
+                                                    "id": tc.get("id"),
+                                                },
                                                 truncate=False,
                                             )
                         if tool_chunk := chunk.get("tools"):
@@ -376,10 +330,17 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                     break  # Success, exit retry loop
                 except Exception as e:
                     err_str = str(e).lower()
-                    if attempt < RATE_LIMIT_RETRIES - 1 and ("429" in err_str or "rate_limit" in err_str):
+                    if attempt < RATE_LIMIT_RETRIES - 1 and (
+                        "429" in err_str or "rate_limit" in err_str
+                    ):
                         wait = RATE_LIMIT_WAIT
                         if on_stream_chunk:
-                            on_stream_chunk("retry", {"message": f"Rate limit (429), waiting {wait}s before retry {attempt + 2}/{RATE_LIMIT_RETRIES}"})
+                            on_stream_chunk(
+                                "retry",
+                                {
+                                    "message": f"Rate limit (429), waiting {wait}s before retry {attempt + 2}/{RATE_LIMIT_RETRIES}"
+                                },
+                            )
                         logger.warning(
                             "Rate limit (429), waiting {}s before retry {}/{}",
                             wait,
@@ -387,7 +348,12 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                             RATE_LIMIT_RETRIES,
                         )
                         if on_stream_chunk:
-                            on_stream_chunk("retry", {"message": f"Rate limit (429), waiting {wait}s before retry {attempt + 2}/{RATE_LIMIT_RETRIES}"})
+                            on_stream_chunk(
+                                "retry",
+                                {
+                                    "message": f"Rate limit (429), waiting {wait}s before retry {attempt + 2}/{RATE_LIMIT_RETRIES}"
+                                },
+                            )
                         time.sleep(wait)
                     else:
                         raise
@@ -403,7 +369,9 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                     "Agent failed to produce 'output.csv'. Please check the agent's logic and inputs."
                 )
 
-            result_df = pd.read_csv(output_path)  # Return parsed CSV + message log for UI
+            result_df = pd.read_csv(
+                output_path
+            )  # Return parsed CSV + message log for UI
             result_df = migrate_image_urls_in_dataframe(result_df)
             logger.info("Migrated image URLs to GCS")
             logger.info(
@@ -414,7 +382,11 @@ Use it as a strict reference for column format, extraction logic, and URL struct
             )
 
             # Save output to data/output/ with same timestamp as inputs
-            out_dir = Path(save_output_dir).expanduser().resolve() if save_output_dir else DATA_OUTPUT_DIR
+            out_dir = (
+                Path(save_output_dir).expanduser().resolve()
+                if save_output_dir
+                else DATA_OUTPUT_DIR
+            )
             out_dir.mkdir(parents=True, exist_ok=True)
             saved_path = out_dir / f"output_{run_timestamp}.csv"
             result_df.to_csv(saved_path, index=False)
@@ -447,7 +419,6 @@ def process_data_two_phase(
     output_columns: List[Dict[str, str]],
     additional_instructions: Optional[str],
     model_name: str = "anthropic:claude-opus-4-6",
-    subagent_model_name: Optional[str] = None,
     sample_size: int = 5,
     validated_phase1_df: Optional[pd.DataFrame] = None,
 ) -> tuple[
@@ -479,12 +450,11 @@ def process_data_two_phase(
             sample_df.to_csv(f, index=False)
             sample_path = Path(f.name)
         try:
-            phase1_df, phase1_messages = process_data(  # Single run on sample
+            phase1_df, phase1_messages = process_data(
                 input_files=[sample_path],
                 output_columns=output_columns,
                 additional_instructions=additional_instructions,
                 model_name=model_name,
-                subagent_model_name=subagent_model_name,
             )
             return phase1_df, None, phase1_messages, []
         finally:
@@ -509,13 +479,12 @@ def process_data_two_phase(
         validated_path = Path(f_val.name)
 
     try:
-        phase2_df, phase2_messages = process_data(  # Run with example_output_path
+        phase2_df, phase2_messages = process_data(
             input_files=[remaining_path],
             output_columns=output_columns,
             additional_instructions=additional_instructions,
             example_output_path=validated_path,
             model_name=model_name,
-            subagent_model_name=subagent_model_name,
         )
         return None, phase2_df, [], phase2_messages
     finally:

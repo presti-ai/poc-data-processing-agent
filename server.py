@@ -94,14 +94,9 @@ async def _run_agent_sse(
     def run_in_thread():
         output_gcs_uri = None
         try:
-            result_df, _ = process_data(
-                input_files=input_paths,
-                output_columns=output_columns,
-                additional_instructions=additional_instructions or None,
-                model_name=model_name,
-                subagent_model_name=subagent_model_name or None,
-                on_stream_chunk=on_chunk,
-            )
+            result_df, _ = process_data(input_files=input_paths, output_columns=output_columns,
+                                        additional_instructions=additional_instructions or None, model_name=model_name,
+                                        on_stream_chunk=on_chunk)
             csv_str = result_df.to_csv(index=False)
             try:
                 output_filename = f"output_{run_id}.csv"

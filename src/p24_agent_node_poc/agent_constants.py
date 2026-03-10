@@ -1,3 +1,17 @@
+from deepagents import SubAgent
+from langchain.agents.middleware import ToolCallLimitMiddleware
+from langchain_experimental.tools import PythonREPLTool
+
+from p24_agent_node_poc.tools import (
+    fetch_html,
+    fetch_page_content, fetch_wayback_page, internet_search, upload_file_gcs,
+)
+
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_WAIT = (
+    65  # seconds (token-per-minute limit resets ~every minute)
+)
+
 SYSTEM_PROMPT = """You are a data processing agent. Your goal is to process input files and create a final CSV file named 'output.csv'.
 
 Efficiency rules:
@@ -26,7 +40,37 @@ Web fetching delegation policy (mandatory):
 - Required workflow for URL-heavy tasks:
   1) inspect one representative URL first to derive extraction logic,
   2) write explicit extraction instructions (where to read in HTML and what to return),
-  3) delegate the remaining URL extraction workload to one or more task subagents in batches,
+  3) delegate the remaining URL extraction workload to task subagents in batches of 10 urls per sub-agent. Never instantiate more than 5 sub-agents in parallel.
   4) aggregate and validate subagent outputs before writing output.csv.
 - For large batches, prefer parallel subagent calls with independent URL chunks.
 """
+
+tools = [
+    PythonREPLTool(),
+    upload_file_gcs,
+    internet_search,
+    fetch_page_content,
+    fetch_html,
+    fetch_wayback_page,
+]
+
+subagents = [
+    SubAgent(
+        name="web_fetch_batch_worker",
+        description=(
+            "Use proactively for URL-heavy web extraction tasks. Ideal when processing more than 5 URLs, so the main agent keeps a small context."
+        ),
+        system_prompt=(
+            "You are a sub-agent specialized in web fetching for CSV enrichment. Use Fetch_HTML_from_URL / Fetch_wayback_page to save HTML to files, then extract requested information by reading the files or using PythonREPLTool. Do not return full HTML content; return concise structured results."
+        ),
+        tools=[fetch_html, fetch_wayback_page, PythonREPLTool()],
+        model="genai:gemini-3-flash-preview",
+        middleware=[
+            ToolCallLimitMiddleware(
+                run_limit=6,  # e.g. max 15 fetch_html calls per delegation
+                exit_behavior="continue",  # block exceeded tools, model returns best effort
+            ),
+        ],
+    ),
+]
+
