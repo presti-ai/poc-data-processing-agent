@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import uuid4
-from firecrawl import Firecrawl
+from firecrawl import firecrawl
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool

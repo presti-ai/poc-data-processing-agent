@@ -83,6 +83,7 @@ def get_agent_messages(
 Input files available in your workspace:
 {"\n".join([f"- {name}" for name in copied_files])}
 
+The first row of the 'output.csv' must contain the columns names.
 The 'output.csv' MUST have the following columns.
 IMPORTANT: Each column description is a strict instruction for how to populate that column.
 {columns_info}

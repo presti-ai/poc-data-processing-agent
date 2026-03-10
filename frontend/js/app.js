@@ -12,9 +12,8 @@ const USE_CASES = [
     output_columns: [
       { name: "source_row_ref", description: "Original row identifier from the input dataset." },
       { name: "normalized_url", description: "Exactly one URL per row. Split rows when multiple URLs exist in one source cell." },
-      { name: "normalization_comment", description: "Short note only when a URL could not be parsed cleanly." },
     ],
-    additional_instructions: "Treat separators like comma, semicolon, pipe, and line breaks as possible URL separators. Keep only valid HTTP/HTTPS URLs.",
+    additional_instructions: "Treat separators like comma, semicolon, pipe, and line breaks as possible URL separators.",
   },
   {
     key: "uc2_packshot_dimensions",
@@ -34,13 +33,13 @@ const USE_CASES = [
   {
     key: "uc3_product_multi_images",
     title: "Product Multi-Image Extraction",
-    description: "Extract all product images from a product page URL.",
+    description: "Extract all product related images from the URL. put one image per column, add more columns if needed.",
     output_columns: [
       { name: "product_page_url", description: "Input product page URL." },
       { name: "image_url_1", description: "First product image URL. If more images exist, create image_url_2, image_url_3, etc." },
       { name: "total_images_found", description: "Total number of images extracted for the product." },
     ],
-    additional_instructions: "Return product images only when possible. If the page mixes lifestyle and product visuals, prioritize product visuals.",
+    additional_instructions: "Extract all product related images from the URL. put one image per column, add more columns if needed.",
   },
   {
     key: "uc4_match_tables_chairs",
@@ -79,7 +78,7 @@ const USE_CASES = [
       { name: "source_page_url", description: "Source page where the image was found." },
       { name: "collection_note", description: "Short note if URL is placeholder or if extraction is limited." },
     ],
-    additional_instructions: "Prefer real lifestyle scenes over product cutouts. This dataset includes placeholder target sections for later completion.",
+    additional_instructions: "Collect lifestyle inspiration image URLs for a seed query. Prefer real life style images",
   },
 ];
 
@@ -293,31 +292,19 @@ function renderInputPreview() {
   csvFiles.forEach((f) => {
     const block = document.createElement("div");
     block.className = "preview-block";
-    block.innerHTML = `<div class="preview-label"></div><div class="preview-table-wrap" id="preview_${escapeHtml(f.name).replace(/[^a-z0-9]/gi, '_')}"></div>`;
+    block.innerHTML = `<div class="preview-label">${escapeHtml(f.name)} — first rows</div><div class="preview-table-wrap" id="preview_${escapeHtml(f.name).replace(/[^a-z0-9]/gi, '_')}"></div>`;
     preview.appendChild(block);
-    const label = block.querySelector(".preview-label");
-    label.textContent = `${f.name} — first rows`;
     const wrap = block.querySelector("[id^='preview_']");
-    readCsvPreview(f, wrap, label);
+    readCsvPreview(f, wrap);
   });
 }
 
-function readCsvPreview(file, container, labelEl) {
+function readCsvPreview(file, container) {
   const reader = new FileReader();
   reader.onload = (e) => {
     const text = e.target.result;
-    const allRows = text
-      .split(/\r?\n/)
-      .map((r) => r.trim())
-      .filter((r) => r.length > 0);
-    if (allRows.length === 0) return;
-
-    const totalRows = Math.max(allRows.length - 1, 0);
-    if (labelEl) {
-      labelEl.textContent = `${file.name} — first rows -- total ${totalRows} rows`;
-    }
-
-    const rows = allRows.slice(0, 6); // header + 5 rows
+    const rows = text.trim().split("\n").slice(0, 6); // header + 5 rows
+    if (rows.length === 0) return;
     const headers = parseCSVLine(rows[0]);
     const data = rows.slice(1).map((r) => parseCSVLine(r));
     let html = `<table class="preview-table"><thead><tr>`;
@@ -401,13 +388,7 @@ function applyRerunPreset(run) {
   const section = document.getElementById("rerunPresetSection");
   const infoEl = document.getElementById("rerunPresetInfo");
 
-  const inputs = (run.inputs || []).map((i) => {
-    const name = i.name || "?";
-    if (typeof i?.row_count === "number") {
-      return `${name} (${i.row_count} rows)`;
-    }
-    return name;
-  }).join(", ");
+  const inputs = (run.inputs || []).map((i) => i.name || "?").join(", ");
   const params = run.params || {};
   infoEl.innerHTML = `
     <p><strong>Inputs:</strong> ${escapeHtml(inputs || "—")}</p>
@@ -674,12 +655,7 @@ async function loadRuns() {
     `;
     for (const r of runs) {
       const date = r.timestamp ? new Date(r.timestamp).toLocaleString() : "—";
-      const inputs = (r.inputs || []).map((i) => {
-        if (typeof i?.row_count === "number") {
-          return `${i.name} (${i.row_count} rows)`;
-        }
-        return i.name;
-      }).join(", ") || "—";
+      const inputs = (r.inputs || []).map((i) => i.name).join(", ") || "—";
       const duration = r.duration_seconds != null ? `${r.duration_seconds}s` : "—";
       const status = r.status || "unknown";
       const statusClass = status === "completed" ? "status-completed" : "status-failed";
