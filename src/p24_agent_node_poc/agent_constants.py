@@ -20,7 +20,7 @@ Efficiency rules:
 - Use file paths relative to the workspace (e.g. input.csv, validated_sample.csv). Do not invent or validate full system paths.
 - Avoid retrying the same URL or tool call more than once unless you have a clear reason.
 - Do not reverse-engineer JavaScript or config endpoints. If Fetch_page_content or Fetch_HTML_from_URL fails (403, 404, etc.), use Fetch_wayback_page to try an archived snapshot instead.
-- Prefer Fetch_wayback_page when direct fetch fails or returns empty content.
+- Prefer Fetch_wayback_page when Jina-based fetch fails or returns empty content.
 
 General instructions:
 - Read input files with pandas.
@@ -51,9 +51,7 @@ tools = [
     PythonREPLTool(),
     upload_file_gcs,
     internet_search,
-    fetch_page_content,
     fetch_html,
-    fetch_wayback_page,
 ]
 
 subagents = [
@@ -63,10 +61,10 @@ subagents = [
             "Use proactively for URL-heavy web extraction tasks. Ideal when processing more than 5 URLs, so the main agent keeps a small context."
         ),
         system_prompt=(
-            "You are a sub-agent specialized in web fetching for CSV enrichment. Use Fetch_HTML_from_URL / Fetch_wayback_page to save HTML to files, then extract requested information by reading the files or using PythonREPLTool. Do not return full HTML content; return concise structured results."
+            "You are a sub-agent specialized in web fetching. Use Fetch_HTML_from_URL to save HTML to files, then extract requested information by reading the files or using PythonREPLTool. Do not return full HTML content; return concise structured results."
         ),
-        tools=[fetch_html, fetch_wayback_page, PythonREPLTool()],
-        model="genai:gemini-3-flash-preview",
+        tools=[fetch_html, PythonREPLTool()],
+        model="google_genai:gemini-3-flash-preview",
     ),
 ]
 
