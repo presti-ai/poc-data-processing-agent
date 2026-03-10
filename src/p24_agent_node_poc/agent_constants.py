@@ -1,16 +1,18 @@
 from deepagents import SubAgent
 from langchain.agents.middleware import ToolCallLimitMiddleware
+from langchain_core.messages import HumanMessage
 from langchain_experimental.tools import PythonREPLTool
 
 from p24_agent_node_poc.tools import (
     fetch_html,
-    fetch_page_content, fetch_wayback_page, internet_search, upload_file_gcs,
+    fetch_page_content,
+    fetch_wayback_page,
+    internet_search,
+    upload_file_gcs,
 )
 
 RATE_LIMIT_RETRIES = 3
-RATE_LIMIT_WAIT = (
-    65  # seconds (token-per-minute limit resets ~every minute)
-)
+RATE_LIMIT_WAIT = 65  # seconds (token-per-minute limit resets ~every minute)
 
 SYSTEM_PROMPT = """You are a data processing agent. Your goal is to process input files and create a final CSV file named 'output.csv'.
 
@@ -68,3 +70,33 @@ subagents = [
     ),
 ]
 
+
+def get_agent_messages(
+    copied_files: list[str],
+    output_columns: list[dict[str, str]],
+    additional_instructions: str | None = None,
+    example_output_path: str | None = None,
+) -> tuple[str, list[HumanMessage]]:
+    columns_info = "\n".join(
+        [f"- {col['name']}: {col['description']}" for col in output_columns]
+    )
+
+    initial_message = f"""Start processing the data now.
+
+Input files available in your workspace:
+{"\n".join([f"- {name}" for name in copied_files])}
+
+The 'output.csv' MUST have the following columns.
+IMPORTANT: Each column description is a strict instruction for how to populate that column.
+{columns_info}
+"""
+
+    if additional_instructions:
+        initial_message += f"\nAdditional instructions:\n{additional_instructions}"
+
+    if example_output_path:
+        initial_message += """\n\nREFERENCE OUTPUT: The file 'validated_sample.csv' contains validated output from a prior run on a subset of data.
+Use it as a strict reference for column format, extraction logic, and URL structure. Process the remaining input files accordingly.
+"""
+
+    return initial_message, [HumanMessage(content=initial_message)]

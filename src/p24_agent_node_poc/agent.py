@@ -19,22 +19,13 @@ from deepagents.backends.filesystem import FilesystemBackend
 from dotenv import load_dotenv
 from langchain_core.messages import (
     AIMessage,
-    HumanMessage,
     ToolMessage,
 )
-from langchain_experimental.tools import PythonREPLTool
 from loguru import logger
 
-from agent_constants import RATE_LIMIT_RETRIES, RATE_LIMIT_WAIT, subagents, SYSTEM_PROMPT, tools
+from agent_constants import (get_agent_messages, RATE_LIMIT_RETRIES, RATE_LIMIT_WAIT, subagents, SYSTEM_PROMPT, tools)
 from agent_logging import _debug_log, _serialize_chunk_for_sse
 from p24_agent_node_poc.image_migration import migrate_image_urls_in_dataframe
-from p24_agent_node_poc.tools import (
-    fetch_html,
-    fetch_page_content,
-    fetch_wayback_page,
-    internet_search,
-    upload_file_gcs,
-)
 
 load_dotenv()  # Load API keys from .env (TAVILY_API_KEY, etc.)
 
@@ -139,13 +130,6 @@ def process_data(
                 shutil.copy2(source_path, destination_path)
                 copied_files.append(destination_path.name)
 
-                try:
-                    content = destination_path.read_text(
-                        encoding="utf-8", errors="ignore"
-                    )
-                except Exception:
-                    pass  # Non-text files: ignore read errors
-
             # Two-phase scaling: add validated sample as reference for the agent
             if example_output_path:
                 ex_path = Path(example_output_path).expanduser().resolve()
@@ -156,44 +140,14 @@ def process_data(
                     shutil.copy2(ex_path, dest)
                     copied_files.append("validated_sample.csv")
 
-            # Build column spec string for the prompt (name + description per column)
-            columns_info = "\n".join(
-                [f"- {col['name']}: {col['description']}" for col in output_columns]
+            initial_message, messages = get_agent_messages(
+                copied_files=copied_files,
+                output_columns=output_columns,
+                additional_instructions=additional_instructions,
+                example_output_path=str(example_output_path)
+                if example_output_path
+                else None,
             )
-
-            # Initial user message: lists workspace files; include column spec only when columns are defined
-            if output_columns:
-                initial_message = f"""Start processing the data now.
-
-Input files available in your workspace:
-{chr(10).join([f"- {name}" for name in copied_files])}
-
-The 'output.csv' MUST have the following columns.
-IMPORTANT: Each column description is a strict instruction for how to populate that column.
-{columns_info}
-"""
-            else:
-                initial_message = f"""Start processing the data now.
-
-Input files available in your workspace:
-{chr(10).join([f"- {name}" for name in copied_files])}
-
-Create output.csv based on the input files. Infer the structure and content from the data and any additional instructions below.
-"""
-
-            # Append optional user instructions (e.g. extraction rules for a use case)
-            if additional_instructions:
-                initial_message += (
-                    f"\nAdditional instructions:\n{additional_instructions}"
-                )
-
-            # Two-phase: tell agent to use validated_sample.csv as format reference
-            if example_output_path:
-                initial_message += """
-
-REFERENCE OUTPUT: The file 'validated_sample.csv' contains validated output from a prior run on a subset of data.
-Use it as a strict reference for column format, extraction logic, and URL structure. Process the remaining input files accordingly.
-"""
 
             logger.info("Workspace ready with {} file(s)", len(copied_files))
 
@@ -234,7 +188,6 @@ Use it as a strict reference for column format, extraction logic, and URL struct
             for attempt in range(RATE_LIMIT_RETRIES):
                 try:
                     # Stream agent responses; capture final state and log model/tool activity
-                    messages = [HumanMessage(content=initial_message)]
                     for stream_mode, chunk in agent.stream(
                         {"messages": messages},
                         config={"configurable": {"thread_id": "data_proc_session"}},
