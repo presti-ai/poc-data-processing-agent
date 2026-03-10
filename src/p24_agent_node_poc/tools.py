@@ -5,6 +5,7 @@ Custom tools for the data processing agent: web search and URL fetching.
 - Fetch_page_content: Clean text extraction via Jina Reader (bypasses some bot protection).
 - Fetch_HTML_from_URL: Raw HTML fetch with Jina fallback on 403.
 - Fetch_wayback_page: Fetch archived page from Wayback Machine when direct fetch fails.
+- Fetch_firecrawl: Clean markdown extraction via Firecrawl (handles JS rendering, strong bot bypass).
 - Upload_file_gcs: Upload a local image file from the workspace to GCS and return its public URL.
 """
 
@@ -38,6 +39,7 @@ _IMAGE_CONTENT_TYPES = {
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 jina_base = os.getenv("JINA_READER_BASE", "https://r.jina.ai")  # Jina Reader proxy
 jina_api_key = os.getenv("JINA_API_KEY")
+firecrawl_api_key = os.getenv("FireCrawl_API_KEY")
 
 
 @tool("Internet_search")
@@ -144,6 +146,34 @@ def fetch_wayback_page(url: str, timestamp: str = "20240101000000") -> str:
             if "returned" not in result or "success" in result.lower():
                 break
     return result
+
+
+@tool("Fetch_firecrawl")
+def fetch_firecrawl(url: str) -> str:
+    """Fetch a page via Firecrawl and return clean markdown content.
+    Handles JavaScript rendering and strong bot protection better than raw requests or Jina.
+    Use as a fallback when Fetch_page_content or Fetch_HTML_from_URL fails.
+    """
+    logger.info("Fetch_firecrawl invoked: url={}", url[:80] + "..." if len(url) > 80 else url)
+    if not url.startswith("http://") and not url.startswith("https://"):
+        return f"Invalid URL (must start with http:// or https://): {url}"
+    if not firecrawl_api_key:
+        return "Firecrawl not configured: FireCrawl_API_KEY not set in .env"
+    try:
+        from firecrawl import FirecrawlApp
+    except ImportError:
+        return "firecrawl-py not installed. Run: poetry add firecrawl-py"
+    try:
+        app = FirecrawlApp(api_key=firecrawl_api_key)
+        result = app.scrape_url(url, formats=["markdown"])
+        # firecrawl-py >= 1.0 returns a ScrapeResponse object; older versions return a dict
+        markdown = getattr(result, "markdown", None) or (result.get("markdown") if isinstance(result, dict) else None)
+        if not markdown:
+            return f"Firecrawl returned no markdown content for {url}"
+        logger.info("Fetch_firecrawl success: {} chars", len(markdown))
+        return markdown
+    except Exception as exc:
+        return f"Firecrawl request failed: {exc}"
 
 
 @tool("Upload_file_gcs")
