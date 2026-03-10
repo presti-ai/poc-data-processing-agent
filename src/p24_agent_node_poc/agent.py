@@ -238,15 +238,21 @@ Create output.csv based on the input files. Infer the structure and content from
 
 Efficiency rules:
 - Use file paths relative to the workspace (e.g. input.csv, validated_sample.csv). Do not invent or validate full system paths.
-- Avoid retrying the same URL or tool call more than once unless you have a clear reason.
-- Do not reverse-engineer JavaScript or config endpoints. If Fetch_firecrawl or Fetch_HTML_from_URL fails (403, 404, etc.), use Fetch_wayback_page to try an archived snapshot instead.
-- Prefer Fetch_wayback_page when direct fetch fails or returns empty content.
+- Avoid retrying the same URL or tool call more than once. If Fetch_firecrawl succeeds on a URL, trust that result and move on — do NOT call Fetch_HTML_from_URL, Python_REPL requests, or any other tool on the same URL.
+- Do not make HTTP requests to external services (scrapers, APIs, CDNs) via Python_REPL. Use only the provided tools: Fetch_firecrawl, Fetch_HTML_from_URL, Fetch_wayback_page, Internet_search.
+- If Fetch_firecrawl or Fetch_HTML_from_URL fails (403, 404, etc.), use Fetch_wayback_page to try an archived snapshot instead. Do not retry failed URLs with raw Python requests.
+
+Batch processing rules (mandatory for efficiency):
+- When the task involves multiple rows or URLs, process ALL of them in parallel from the start. Do not process one URL fully before starting the rest.
+- Use concurrent.futures.ThreadPoolExecutor in Python_REPL to call Fetch_firecrawl (or HEAD requests) on all URLs simultaneously.
+- Fetch one URL manually first only if you need to discover the extraction pattern, then immediately run the full batch in parallel.
 
 General instructions:
 - Read input files with pandas.
-- Use PythonREPLTool for data manipulation and to save the final 'output.csv' in the current directory.
+- Use Python_REPL for data manipulation and to save the final 'output.csv' in the current directory.
 - Use Internet_search when web search is needed.
-- Use Fetch_firecrawl first for most pages; use Fetch_HTML_from_URL when cleaned content is not enough.
+- Use Fetch_firecrawl first for most pages, it returns both clean markdown AND a '## Links' section with all URLs found on the page (including lazy-loaded images). Parse the Links section to find image URLs.
+- Use Fetch_HTML_from_URL only when Fetch_firecrawl fails or returns insufficient content.
 - Keep tool-use explanations brief and practical.
 - Use write_todos to track next actions when task complexity is high.
 - Ensure 'output.csv' contains the required columns and is saved before ending.
@@ -255,11 +261,17 @@ General instructions:
 - When 'input_images.csv' is present, it lists image names and their GCS URLs (image_name, image_url columns). Use those URLs directly; you do not need to upload local images.
 
 Web fetching delegation policy (mandatory):
-- When you have to retrieve information from similar urls, delegate the task to subagents. Only do the fetching once to ensure its feasibility. 
+- When you have to retrieve information from similar urls, delegate the task to subagents. Only do the fetching once to ensure its feasibility.
   1) fetch one representative URL yourself first to validate extraction logic,
   2) then delegate the remaining URL extraction workload to one or more task subagents,
-  3) aggregate subagent outputs 
+  3) aggregate subagent outputs
 - For large batches, prefer parallel subagent calls with independent URL chunks.
+
+Image URL discovery strategy (apply in order, stop at first success):
+1. Parse the Firecrawl markdown for image tags: lines matching `![...](<url>)` where the URL ends in .jpg/.png/.webp and the URL contains a product-related segment (product ID, EAN, SKU, or product name). Discard icon/picto/SVG/UI images (e.g. paths containing "icon", "picto", "logo", "svg", "close", "star", "arrow", "creditCard", "checkBasket"). Keep only URLs that plausibly represent the product itself.
+2. Check the '## Links' section for URLs ending in .jpg/.png/.webp with product-related path segments (same filter).
+3. If still no image: use Internet_search with the product name or ID, search results sometimes include direct CDN image links.
+4. If a CDN URL pattern is found for one product (e.g. the URL contains the product ID), derive the URL for all remaining products and validate with HEAD requests in Python_REPL. Do not call Fetch_firecrawl again for image discovery.
 """
 
             # Append optional user instructions (e.g. extraction rules for a use case)
@@ -295,11 +307,11 @@ Use it as a strict reference for column format, extraction logic, and URL struct
                     system_prompt=(
                         "You are a sub-agent specialized in web fetching for CSV enrichment. Focus on the assigned URLs and return concise structured results."
                     ),
-                    tools=[fetch_html, fetch_wayback_page],
+                    tools=[fetch_firecrawl, fetch_html, fetch_wayback_page],
                     model=subagent_model,
                     middleware=[
                             ToolCallLimitMiddleware(
-                                run_limit=6,  # e.g. max 15 fetch_html calls per delegation
+                                run_limit=25,  # 5 URLs × (1 Firecrawl + 1 REPL parse + 1 HEAD check) + buffer
                                 exit_behavior="continue",  # block exceeded tools, model returns best effort
                                             )
                                 ],

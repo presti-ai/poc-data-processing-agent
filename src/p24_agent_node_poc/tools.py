@@ -150,9 +150,10 @@ def fetch_wayback_page(url: str, timestamp: str = "20240101000000") -> str:
 
 @tool("Fetch_firecrawl")
 def fetch_firecrawl(url: str) -> str:
-    """Fetch a page via Firecrawl and return clean markdown content.
+    """Fetch a page via Firecrawl and return clean markdown content plus all page links.
     Handles JavaScript rendering and strong bot protection better than raw requests or Jina.
-    Use as a fallback when Fetch_page_content or Fetch_HTML_from_URL fails.
+    Returns markdown text followed by a '## Links' section listing all URLs found on the page
+    (including lazy-loaded images and assets). Use this as the primary scraping tool.
     """
     logger.info("Fetch_firecrawl invoked: url={}", url[:80] + "..." if len(url) > 80 else url)
     if not url.startswith("http://") and not url.startswith("https://"):
@@ -165,12 +166,18 @@ def fetch_firecrawl(url: str) -> str:
         return "firecrawl-py not installed. Run: poetry add firecrawl-py"
     try:
         app = FirecrawlApp(api_key=firecrawl_api_key)
-        result = app.scrape_url(url, params={"formats": ["markdown"]})
-        markdown = result.get("markdown") if isinstance(result, dict) else getattr(result, "markdown", None)
-        if not markdown:
-            return f"Firecrawl returned no markdown content for {url}"
-        logger.info("Fetch_firecrawl success: {} chars", len(markdown))
-        return markdown
+        result = app.scrape_url(url, params={"formats": ["markdown", "links"]})
+        if not isinstance(result, dict):
+            result = vars(result) if hasattr(result, "__dict__") else {}
+        markdown = result.get("markdown") or ""
+        links: list = result.get("links") or []
+        if not markdown and not links:
+            return f"Firecrawl returned no content for {url}"
+        output = markdown
+        if links:
+            output += "\n\n## Links\n" + "\n".join(links)
+        logger.info("Fetch_firecrawl success: {} chars, {} links", len(markdown), len(links))
+        return output
     except Exception as exc:
         return f"Firecrawl request failed: {exc}"
 
