@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import uuid4
+from firecrawl import Firecrawl
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
@@ -182,24 +183,17 @@ def fetch_firecrawl(url: str) -> str:
             "error",
             url,
             fetched_via="firecrawl",
-            error="Firecrawl not configured: FireCrawl_API_KEY not set in .env",
+            error="Firecrawl not configured: FIRECRAWL_API_KEY not set in .env",
         )
 
     try:
-        from firecrawl import FirecrawlApp
-    except ImportError:
-        return _json_result(
-            "error",
-            url,
-            fetched_via="firecrawl",
-            error="firecrawl-py not installed. Run: poetry add firecrawl-py",
-        )
-
-    try:
-        app = FirecrawlApp(api_key=firecrawl_api_key)
-        result = app.scrape_url(url, params={"formats": ["markdown", "links"]})
+        app = Firecrawl(api_key=firecrawl_api_key)
+        result = app.scrape(url, formats=["markdown", "links"])
         if not isinstance(result, dict):
             result = vars(result) if hasattr(result, "__dict__") else {}
+
+        if isinstance(result.get("data"), dict):
+            result = result["data"]
 
         markdown = result.get("markdown") or ""
         links = result.get("links") or []
@@ -350,7 +344,7 @@ if __name__ == "__main__":
 
     logger.info(f"Testing {fetch_firecrawl.name}")
     logger.info("Google HTML snippet")
-    logger.info(fetch_firecrawl.invoke("https://www.google.com")[:100])
+    logger.info(fetch_firecrawl.invoke("https://www.google.com"))
     logger.info("BUT HTML snippet")
     logger.info(
         fetch_firecrawl.invoke("https://www.but.fr/produits/2099901526182/fiche.html")[:100]
