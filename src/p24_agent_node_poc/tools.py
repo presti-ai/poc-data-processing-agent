@@ -4,7 +4,7 @@ This module exposes LangChain tools for:
 
 - Web search via Tavily (`Internet_search`).
 - Readable page extraction via Jina Reader (`Fetch_page_content`).
-- Raw HTML fetching to local files with compact JSON outputs (`Fetch_HTML_from_URL`).
+- Firecrawl-based page fetching to local files with compact JSON outputs (`Fetch_firecrawl`).
 - Wayback Machine fallback retrieval (`Fetch_wayback_page`).
 - Uploading local workspace images to Google Cloud Storage (`Upload_file_gcs`).
 
@@ -22,7 +22,6 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
-import requests
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from loguru import logger
@@ -44,24 +43,21 @@ _IMAGE_CONTENT_TYPES = {
 
 # API clients (keys from .env)
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
-jina_base = os.getenv("JINA_READER_BASE", "https://r.jina.ai")  # Jina Reader proxy
-jina_api_key = os.getenv("JINA_API_KEY")
+firecrawl_api_key = os.getenv("FIRECRAWL_API_KEY")
 _HTML_FETCH_OUTPUT_DIR = "fetched_html"
 
 
-def _make_html_filename(url: str) -> str:
+def _make_html_filename(url: str, suffix: str = "html") -> str:
     parsed = urlparse(url)
     host_part = re.sub(r"[^a-zA-Z0-9]+", "-", parsed.netloc).strip("-") or "url"
     path_part = re.sub(r"[^a-zA-Z0-9]+", "-", parsed.path).strip("-") or "root"
-    return (
-        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{host_part}_{path_part[:64]}_{uuid4().hex[:8]}.html"
-    )
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{host_part}_{path_part[:64]}_{uuid4().hex[:8]}.{suffix}"
 
 
-def _save_html_to_workspace(url: str, html: str) -> str:
+def _save_html_to_workspace(url: str, html: str, suffix: str = "html") -> str:
     output_dir = Path.cwd() / _HTML_FETCH_OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / _make_html_filename(url)
+    out_path = output_dir / _make_html_filename(url, suffix=suffix)
     out_path.write_text(html, encoding="utf-8")
     return str(out_path.relative_to(Path.cwd()))
 
@@ -102,13 +98,13 @@ def _parse_fetch_result(raw_result: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {
             "status": "error",
-            "error": "Fetch_HTML_from_URL returned non-JSON output.",
+            "error": "Fetch_firecrawl returned non-JSON output.",
             "raw_result_snippet": raw_result[:200],
         }
     if not isinstance(parsed, dict):
         return {
             "status": "error",
-            "error": "Fetch_HTML_from_URL returned unexpected JSON type.",
+            "error": "Fetch_firecrawl returned unexpected JSON type.",
         }
     return parsed
 
@@ -144,55 +140,14 @@ def internet_search(
     return result
 
 
-@tool("Fetch_page_content")
-def fetch_page_content(url: str) -> str:
-    """Fetch readable page content through Jina Reader.
-
-    This tool is intended for text extraction when raw HTML is unnecessary. It calls
-    the Jina Reader endpoint (`{jina_base}/{url}`), which often bypasses bot-protection
-    issues and returns cleaned, markdown-like text.
-
-    Args:
-        url: Absolute HTTP(S) URL to retrieve.
-
-    Returns:
-        A string containing cleaned page content on success, or a human-readable error
-        message when the request fails or the URL is invalid.
-    """
-    logger.info("Fetch_page_content invoked: url={}", url[:80] + "..." if len(url) > 80 else url)
-    if not url.startswith("http://") and not url.startswith("https://"):
-        return f"Invalid URL (must start with http:// or https://): {url}"
-    # Jina Reader: GET https://r.jina.ai/{url} returns cleaned text
-    reader_url = f"{jina_base}/{url}"
-    headers = {}
-    if jina_api_key:
-        headers["Authorization"] = f"Bearer {jina_api_key}"
-    try:
-        # Jina bypasses many bot blocks; returns markdown-like text
-        resp = requests.get(reader_url, headers=headers, timeout=30)
-    except Exception as exc:  # pragma: no cover - network / connectivity errors
-        return f"Jina Reader request failed: {exc}"
-    if not resp.ok:
-        snippet = resp.text[:500]
-        if resp.status_code == 402:
-            return (
-                f"Jina Reader returned 402 (Payment Required). "
-                f"Try Fetch_wayback_page for archived content, or Fetch_HTML_from_URL for raw HTML."
-            )
-        return f"Jina Reader returned {resp.status_code}: {snippet}"
-    logger.info("Fetch_page_content success: {} chars", len(resp.text))
-    return resp.text
-
-
-@tool("Fetch_HTML_from_URL")
-def fetch_html(url: str) -> str:
-    """Fetch raw HTML, save it locally, and return a compact JSON payload.
+@tool("Fetch_firecrawl")
+def fetch_firecrawl(url: str) -> str:
+    """Fetch page content through Firecrawl, save it locally, and return compact JSON.
 
     Behavior:
     - Validates that the URL starts with `http://` or `https://`.
-    - Attempts a direct HTTP request with browser-like headers.
-    - If direct fetch returns `403`, retries using Jina Reader HTML mode.
-    - Saves HTML content to `fetched_html/` under the current workspace.
+    - Fetches markdown + links via Firecrawl.
+    - Saves Firecrawl output content to `fetched_html/` under the current workspace.
 
     The tool does **not** return full HTML inline. Instead, it returns JSON that
     includes local file path(s), status, fetch metadata, and optional comments/errors.
@@ -211,7 +166,10 @@ def fetch_html(url: str) -> str:
         - `char_count`: HTML length on success
         - `error`: error description on failure
     """
-    logger.success(f"Fetching page content from {url}")
+    logger.info(
+        "Fetch_firecrawl invoked: url={}",
+        url[:80] + "..." if len(url) > 80 else url,
+    )
     if not url.startswith("http://") and not url.startswith("https://"):
         return _json_result(
             "error",
@@ -219,72 +177,66 @@ def fetch_html(url: str) -> str:
             error="Invalid URL (must start with http:// or https://).",
         )
 
-    # Browser-like headers to reduce 403 rates
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
-    }
-
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-    except Exception as exc:  # pragma: no cover - network / connectivity errors
-        return _json_result("error", url, error=f"Request failed: {exc}")
-
-    # On 403 (bot block), retry via Jina Reader which often succeeds
-    fetched_via = "direct_http"
-    comments: list[str] = []
-    if resp.status_code == 403:
-        logger.info(f"Direct request to {url} returned 403. Trying via Jina Reader...")
-        reader_url = f"{jina_base}/{url}"
-        jina_headers = {"X-Return-Format": "html"}
-        if jina_api_key:
-            jina_headers["Authorization"] = f"Bearer {jina_api_key}"
-        try:
-            resp = requests.get(reader_url, headers=jina_headers, timeout=15)
-        except Exception as exc:
-            return _json_result(
-                "error",
-                url,
-                http_status=403,
-                comments=["Direct fetch returned 403.", "Jina Reader fallback attempt failed."],
-                error=f"Jina Reader fallback failed: {exc}",
-            )
-        fetched_via = "jina_reader_html_fallback"
-        comments.append("Direct fetch returned 403; used Jina Reader HTML fallback.")
-
-    if not resp.ok:
-        snippet = (resp.text or "")[:240]
+    if not firecrawl_api_key:
         return _json_result(
             "error",
             url,
-            fetched_via=fetched_via,
-            http_status=resp.status_code,
-            comments=comments,
-            error=f"Request returned {resp.status_code}: {snippet}",
+            fetched_via="firecrawl",
+            error="Firecrawl not configured: FireCrawl_API_KEY not set in .env",
         )
 
     try:
-        html_file_path = _save_html_to_workspace(url, resp.text)
+        from firecrawl import FirecrawlApp
+    except ImportError:
+        return _json_result(
+            "error",
+            url,
+            fetched_via="firecrawl",
+            error="firecrawl-py not installed. Run: poetry add firecrawl-py",
+        )
+
+    try:
+        app = FirecrawlApp(api_key=firecrawl_api_key)
+        result = app.scrape_url(url, params={"formats": ["markdown", "links"]})
+        if not isinstance(result, dict):
+            result = vars(result) if hasattr(result, "__dict__") else {}
+
+        markdown = result.get("markdown") or ""
+        links = result.get("links") or []
+
+        if not markdown and not links:
+            return _json_result(
+                "error",
+                url,
+                fetched_via="firecrawl",
+                error=f"Firecrawl returned no content for {url}",
+            )
+
+        output = markdown
+        if links:
+            output += "\n\n## Links\n" + "\n".join(links)
+
+        html_file_path = _save_html_to_workspace(url, output, suffix="md")
     except Exception as exc:
         return _json_result(
             "error",
             url,
-            fetched_via=fetched_via,
-            http_status=resp.status_code,
-            comments=comments,
-            error=f"Failed to save HTML to local file: {exc}",
+            fetched_via="firecrawl",
+            error=f"Firecrawl request failed: {exc}",
         )
 
-    logger.info("Fetch_HTML_from_URL success: {} chars -> {}", len(resp.text), html_file_path)
+    logger.info(
+        "Fetch_firecrawl success: {} chars, {} links -> {}",
+        len(markdown),
+        len(links),
+        html_file_path,
+    )
     return _json_result(
         "ok",
         url,
-        files=[{"path": html_file_path, "type": "html"}],
-        fetched_via=fetched_via,
-        http_status=resp.status_code,
-        comments=comments or None,
-        extra={"char_count": len(resp.text)},
+        files=[{"path": html_file_path, "type": "markdown"}],
+        fetched_via="firecrawl",
+        extra={"char_count": len(output), "links_count": len(links)},
     )
 
 
@@ -294,7 +246,7 @@ def fetch_wayback_page(url: str, timestamp: str = "20240101000000") -> str:
 
     The tool attempts the provided timestamp first, then retries with predefined
     fallback timestamps. Each attempt delegates actual fetching to
-    `Fetch_HTML_from_URL` using a Wayback URL.
+    `Fetch_firecrawl` using a Wayback URL.
 
     On success, the returned JSON extends the base fetch contract with Wayback
     metadata (`original_url`, `wayback_timestamp`, `wayback_url`).
@@ -304,7 +256,7 @@ def fetch_wayback_page(url: str, timestamp: str = "20240101000000") -> str:
         timestamp: Preferred Wayback timestamp in `YYYYMMDDhhmmss` format.
 
     Returns:
-        A JSON string matching the `Fetch_HTML_from_URL` contract with additional
+        A JSON string matching the `Fetch_firecrawl` contract with additional
         Wayback metadata on success, or an error payload including attempt details.
     """
     logger.info("Fetch_wayback_page invoked: url={} timestamp={}", url[:80], timestamp)
@@ -322,7 +274,7 @@ def fetch_wayback_page(url: str, timestamp: str = "20240101000000") -> str:
 
     for ts in tried_timestamps:
         wayback_url = f"https://web.archive.org/web/{ts}/{url}"
-        result = _parse_fetch_result(fetch_html.invoke(wayback_url))
+        result = _parse_fetch_result(fetch_firecrawl.invoke(wayback_url))
         if result.get("status") == "ok":
             comments = list(result.get("comments", []))
             comments.append(
@@ -396,10 +348,10 @@ if __name__ == "__main__":
     logger.info(f"Testing {internet_search.name}")
     logger.info(internet_search.invoke("BUT tables"))
 
-    logger.info(f"Testing {fetch_html.name}")
+    logger.info(f"Testing {fetch_firecrawl.name}")
     logger.info("Google HTML snippet")
-    logger.info(fetch_html.invoke("https://www.google.com")[:100])
+    logger.info(fetch_firecrawl.invoke("https://www.google.com")[:100])
     logger.info("BUT HTML snippet")
     logger.info(
-        fetch_html.invoke("https://www.but.fr/produits/2099901526182/fiche.html")[:100]
+        fetch_firecrawl.invoke("https://www.but.fr/produits/2099901526182/fiche.html")[:100]
     )

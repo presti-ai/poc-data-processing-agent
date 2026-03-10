@@ -4,9 +4,7 @@ from langchain_core.messages import HumanMessage
 from langchain_experimental.tools import PythonREPLTool
 
 from p24_agent_node_poc.tools import (
-    fetch_html,
-    fetch_page_content,
-    fetch_wayback_page,
+    fetch_firecrawl,
     internet_search,
     upload_file_gcs,
 )
@@ -19,15 +17,15 @@ SYSTEM_PROMPT = """You are a data processing agent. Your goal is to process inpu
 Efficiency rules:
 - Use file paths relative to the workspace (e.g. input.csv, validated_sample.csv). Do not invent or validate full system paths.
 - Avoid retrying the same URL or tool call more than once unless you have a clear reason.
-- Do not reverse-engineer JavaScript or config endpoints. If Fetch_page_content or Fetch_HTML_from_URL fails (403, 404, etc.), use Fetch_wayback_page to try an archived snapshot instead.
+- Do not reverse-engineer JavaScript or config endpoints. If Fetch_page_content or Fetch_firecrawl fails (403, 404, etc.), use Fetch_wayback_page to try an archived snapshot instead.
 - Prefer Fetch_wayback_page when Jina-based fetch fails or returns empty content.
 
 General instructions:
 - Read input files with pandas.
 - Use PythonREPLTool for data manipulation and to save the final 'output.csv' in the current directory.
 - Use Internet_search when web search is needed.
-- Use Fetch_page_content first for most pages; use Fetch_HTML_from_URL when cleaned content is not enough.
-- Fetch_HTML_from_URL and Fetch_wayback_page return compact JSON that points to local HTML file path(s); they do not return full HTML inline.
+- Use Fetch_page_content first for most pages; use Fetch_firecrawl when cleaned content is not enough.
+- Fetch_firecrawl and Fetch_wayback_page return compact JSON that points to local file path(s); they do not return full page content inline.
 - After HTML fetches, use PythonREPLTool to read only the required snippets from saved files.
 - Avoid reading full HTML pages by yourself in the main agent context; rather give such tasks to small sub-agents that can seek for information and data in the fetched html files.
 - Keep tool-use explanations brief and practical.
@@ -51,7 +49,7 @@ tools = [
     PythonREPLTool(),
     upload_file_gcs,
     internet_search,
-    fetch_html,
+    fetch_firecrawl,
 ]
 
 subagents = [
@@ -61,9 +59,9 @@ subagents = [
             "Use proactively for URL-heavy web extraction tasks. Ideal when processing more than 5 URLs, so the main agent keeps a small context."
         ),
         system_prompt=(
-            "You are a sub-agent specialized in web fetching. Use Fetch_HTML_from_URL to save HTML to files, then extract requested information by reading the files or using PythonREPLTool. Do not return full HTML content; return concise structured results."
+            "You are a sub-agent specialized in web fetching. Use Fetch_firecrawl to save page content to files, then extract requested information by reading the files or using PythonREPLTool. Do not return full page content; return concise structured results."
         ),
-        tools=[fetch_html, PythonREPLTool()],
+        tools=[fetch_firecrawl, PythonREPLTool()],
         model="google_genai:gemini-3-flash-preview",
     ),
 ]
