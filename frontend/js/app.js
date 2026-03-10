@@ -293,19 +293,31 @@ function renderInputPreview() {
   csvFiles.forEach((f) => {
     const block = document.createElement("div");
     block.className = "preview-block";
-    block.innerHTML = `<div class="preview-label">${escapeHtml(f.name)} — first rows</div><div class="preview-table-wrap" id="preview_${escapeHtml(f.name).replace(/[^a-z0-9]/gi, '_')}"></div>`;
+    block.innerHTML = `<div class="preview-label"></div><div class="preview-table-wrap" id="preview_${escapeHtml(f.name).replace(/[^a-z0-9]/gi, '_')}"></div>`;
     preview.appendChild(block);
+    const label = block.querySelector(".preview-label");
+    label.textContent = `${f.name} — first rows`;
     const wrap = block.querySelector("[id^='preview_']");
-    readCsvPreview(f, wrap);
+    readCsvPreview(f, wrap, label);
   });
 }
 
-function readCsvPreview(file, container) {
+function readCsvPreview(file, container, labelEl) {
   const reader = new FileReader();
   reader.onload = (e) => {
     const text = e.target.result;
-    const rows = text.trim().split("\n").slice(0, 6); // header + 5 rows
-    if (rows.length === 0) return;
+    const allRows = text
+      .split(/\r?\n/)
+      .map((r) => r.trim())
+      .filter((r) => r.length > 0);
+    if (allRows.length === 0) return;
+
+    const totalRows = Math.max(allRows.length - 1, 0);
+    if (labelEl) {
+      labelEl.textContent = `${file.name} — first rows -- total ${totalRows} rows`;
+    }
+
+    const rows = allRows.slice(0, 6); // header + 5 rows
     const headers = parseCSVLine(rows[0]);
     const data = rows.slice(1).map((r) => parseCSVLine(r));
     let html = `<table class="preview-table"><thead><tr>`;
@@ -389,7 +401,13 @@ function applyRerunPreset(run) {
   const section = document.getElementById("rerunPresetSection");
   const infoEl = document.getElementById("rerunPresetInfo");
 
-  const inputs = (run.inputs || []).map((i) => i.name || "?").join(", ");
+  const inputs = (run.inputs || []).map((i) => {
+    const name = i.name || "?";
+    if (typeof i?.row_count === "number") {
+      return `${name} (${i.row_count} rows)`;
+    }
+    return name;
+  }).join(", ");
   const params = run.params || {};
   infoEl.innerHTML = `
     <p><strong>Inputs:</strong> ${escapeHtml(inputs || "—")}</p>
@@ -656,7 +674,12 @@ async function loadRuns() {
     `;
     for (const r of runs) {
       const date = r.timestamp ? new Date(r.timestamp).toLocaleString() : "—";
-      const inputs = (r.inputs || []).map((i) => i.name).join(", ") || "—";
+      const inputs = (r.inputs || []).map((i) => {
+        if (typeof i?.row_count === "number") {
+          return `${i.name} (${i.row_count} rows)`;
+        }
+        return i.name;
+      }).join(", ") || "—";
       const duration = r.duration_seconds != null ? `${r.duration_seconds}s` : "—";
       const status = r.status || "unknown";
       const statusClass = status === "completed" ? "status-completed" : "status-failed";

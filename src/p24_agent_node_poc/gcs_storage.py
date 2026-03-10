@@ -1,11 +1,13 @@
 """
-GCS storage utilities for the haithem folder in presti-tmp-test bucket.
-Handles uploads, downloads, and upload history persisted in a JSON blob.
+Storage utilities for the haithem folder in presti-tmp-test bucket.
+Handles GCS uploads/downloads and local run history persistence.
 """
 
 import json
+import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -19,7 +21,9 @@ HAITHEM_PREFIX = "haithem"
 IMAGES_PREFIX = f"{HAITHEM_PREFIX}/images"
 HISTORY_BLOB = f"{HAITHEM_PREFIX}/uploads_history.json"
 OUTPUTS_PREFIX = f"{HAITHEM_PREFIX}/outputs"
-RUNS_HISTORY_BLOB = f"{HAITHEM_PREFIX}/runs_history.json"
+RUNS_HISTORY_PATH = Path(
+    os.getenv("P24_RUNS_HISTORY_PATH", Path(__file__).resolve().parents[2] / "data" / "runs_history.json")
+)
 
 _storage_client: storage.Client | None = None
 
@@ -143,12 +147,9 @@ def append_to_history(entry: dict[str, Any]) -> None:
 
 
 def read_runs_history() -> list[dict[str, Any]]:
-    """Read run history from GCS. Returns empty list if missing or invalid."""
+    """Read run history from local file. Returns empty list if missing or invalid."""
     try:
-        client = get_storage_client()
-        bucket = client.bucket(BUCKET_NAME)
-        blob = bucket.blob(RUNS_HISTORY_BLOB)
-        data = blob.download_as_bytes()
+        data = RUNS_HISTORY_PATH.read_bytes()
         runs = json.loads(data.decode("utf-8"))
         return runs if isinstance(runs, list) else []
     except Exception:
@@ -161,13 +162,8 @@ def append_run(entry: dict[str, Any]) -> str:
     entry["id"] = run_id
     runs = read_runs_history()
     runs.append(entry)
-    client = get_storage_client()
-    bucket = client.bucket(BUCKET_NAME)
-    blob = bucket.blob(RUNS_HISTORY_BLOB)
-    blob.upload_from_string(
-        json.dumps(runs, indent=2),
-        content_type="application/json",
-    )
+    RUNS_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RUNS_HISTORY_PATH.write_text(json.dumps(runs, indent=2), encoding="utf-8")
     return run_id
 
 
@@ -178,13 +174,8 @@ def delete_run(run_id: str) -> bool:
     runs = [r for r in runs if r.get("id") != run_id]
     if len(runs) == original_len:
         return False
-    client = get_storage_client()
-    bucket = client.bucket(BUCKET_NAME)
-    blob = bucket.blob(RUNS_HISTORY_BLOB)
-    blob.upload_from_string(
-        json.dumps(runs, indent=2),
-        content_type="application/json",
-    )
+    RUNS_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RUNS_HISTORY_PATH.write_text(json.dumps(runs, indent=2), encoding="utf-8")
     return True
 
 

@@ -24,8 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from p24_agent_node_poc.agent import process_data
-from p24_agent_node_poc.gcs_storage import (
+from src.p24_agent_node_poc.agent import process_data
+from src.p24_agent_node_poc.gcs_storage import (
     append_run,
     delete_run,
     download_from_gcs,
@@ -169,9 +169,22 @@ def _safe_filename(name: str) -> str:
     return base if base else "unnamed"
 
 
+def _count_csv_rows(content: bytes) -> int | None:
+    """Return number of data rows in a CSV payload (header excluded)."""
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
+    reader = csv.reader(io.StringIO(text))
+    rows = [row for row in reader if row and any(cell.strip() for cell in row)]
+    if not rows:
+        return 0
+    return max(len(rows) - 1, 0)
+
+
 @app.get("/api/runs")
 def api_runs():
-    """Return run history from GCS (newest first)."""
+    """Return run history from local storage (newest first)."""
     runs = read_runs_history()
     return {"runs": list(reversed(runs))}
 
@@ -317,25 +330,37 @@ async def api_run(request: Request):
                         ext = Path(safe).suffix.lower()
                         if ext not in ALLOWED_EXTENSIONS and ext not in AGENT_EXTENSIONS:
                             continue
+                        file_bytes = zf.read(name)
                         blob_path = f"{upload_prefix}/{safe}"
                         try:
-                            gcs_uri = upload_to_haithem(zf.read(name), blob_path, _guess_content_type(safe))
-                            input_infos.append({"name": safe, "gcs_uri": gcs_uri})
+                            gcs_uri = upload_to_haithem(file_bytes, blob_path, _guess_content_type(safe))
+                            info = {"name": safe, "gcs_uri": gcs_uri}
+                            if ext == ".csv":
+                                row_count = _count_csv_rows(file_bytes)
+                                if row_count is not None:
+                                    info["row_count"] = row_count
+                            input_infos.append(info)
                             dest = Path(tmpdir) / safe
                             counter = 0
                             while dest.exists():
                                 counter += 1
                                 dest = Path(tmpdir) / f"{Path(safe).stem}_{counter}{ext}"
-                            dest.write_bytes(zf.read(name))
+                            dest.write_bytes(file_bytes)
                             input_paths.append(dest)
                         except Exception:
                             continue
             else:
                 safe = _safe_filename(filename)
                 blob_path = f"{upload_prefix}/{safe}"
+                ext = Path(safe).suffix.lower()
                 try:
                     gcs_uri = upload_to_haithem(content, blob_path, _guess_content_type(safe))
-                    input_infos.append({"name": safe, "gcs_uri": gcs_uri})
+                    info = {"name": safe, "gcs_uri": gcs_uri}
+                    if ext == ".csv":
+                        row_count = _count_csv_rows(content)
+                        if row_count is not None:
+                            info["row_count"] = row_count
+                    input_infos.append(info)
                 except Exception:
                     pass
                 dest = Path(tmpdir) / (safe or f"input_{i}.csv")
@@ -351,7 +376,12 @@ async def api_run(request: Request):
                 ext = Path(name).suffix.lower()
                 if ext not in AGENT_EXTENSIONS:
                     continue
-                input_infos.append({"name": name, "gcs_uri": gcs_uri})
+                info = {"name": name, "gcs_uri": gcs_uri}
+                if ext == ".csv":
+                    row_count = _count_csv_rows(content)
+                    if row_count is not None:
+                        info["row_count"] = row_count
+                input_infos.append(info)
                 dest = Path(tmpdir) / name
                 counter = 0
                 while dest.exists():
