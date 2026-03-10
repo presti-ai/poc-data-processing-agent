@@ -23,8 +23,8 @@ from langchain_core.messages import (
 )
 from loguru import logger
 
-from agent_constants import (get_agent_messages, RATE_LIMIT_RETRIES, RATE_LIMIT_WAIT, subagents, SYSTEM_PROMPT, tools)
-from agent_logging import _debug_log, _serialize_chunk_for_sse
+from p24_agent_node_poc.agent_constants import (get_agent_messages, RATE_LIMIT_RETRIES, RATE_LIMIT_WAIT, subagents, SYSTEM_PROMPT, tools)
+from p24_agent_node_poc.agent_logging import _debug_log, _serialize_chunk_for_sse
 from p24_agent_node_poc.image_migration import migrate_image_urls_in_dataframe
 
 load_dotenv()  # Load API keys from .env (TAVILY_API_KEY, etc.)
