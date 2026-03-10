@@ -12,9 +12,8 @@ const USE_CASES = [
     output_columns: [
       { name: "source_row_ref", description: "Original row identifier from the input dataset." },
       { name: "normalized_url", description: "Exactly one URL per row. Split rows when multiple URLs exist in one source cell." },
-      { name: "normalization_comment", description: "Short note only when a URL could not be parsed cleanly." },
     ],
-    additional_instructions: "Treat separators like comma, semicolon, pipe, and line breaks as possible URL separators. Keep only valid HTTP/HTTPS URLs.",
+    additional_instructions: "Treat separators like comma, semicolon, pipe, and line breaks as possible URL separators.",
   },
   {
     key: "uc2_packshot_dimensions",
@@ -34,13 +33,13 @@ const USE_CASES = [
   {
     key: "uc3_product_multi_images",
     title: "Product Multi-Image Extraction",
-    description: "Extract all product images from a product page URL.",
+    description: "Extract all product related images from the URL. put one image per column, add more columns if needed.",
     output_columns: [
       { name: "product_page_url", description: "Input product page URL." },
       { name: "image_url_1", description: "First product image URL. If more images exist, create image_url_2, image_url_3, etc." },
       { name: "total_images_found", description: "Total number of images extracted for the product." },
     ],
-    additional_instructions: "Return product images only when possible. If the page mixes lifestyle and product visuals, prioritize product visuals.",
+    additional_instructions: "Extract all product related images from the URL. put one image per column, add more columns if needed.",
   },
   {
     key: "uc4_match_tables_chairs",
@@ -79,7 +78,7 @@ const USE_CASES = [
       { name: "source_page_url", description: "Source page where the image was found." },
       { name: "collection_note", description: "Short note if URL is placeholder or if extraction is limited." },
     ],
-    additional_instructions: "Prefer real lifestyle scenes over product cutouts. This dataset includes placeholder target sections for later completion.",
+    additional_instructions: "Collect lifestyle inspiration image URLs for a seed query. Prefer real life style images",
   },
 ];
 
