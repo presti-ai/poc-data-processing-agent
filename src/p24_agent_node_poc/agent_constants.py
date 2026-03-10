@@ -65,12 +65,6 @@ subagents = [
         ),
         tools=[fetch_html, fetch_wayback_page, PythonREPLTool()],
         model="genai:gemini-3-flash-preview",
-        middleware=[
-            ToolCallLimitMiddleware(
-                run_limit=6,  # e.g. max 15 fetch_html calls per delegation
-                exit_behavior="continue",  # block exceeded tools, model returns best effort
-            ),
-        ],
     ),
 ]
 
