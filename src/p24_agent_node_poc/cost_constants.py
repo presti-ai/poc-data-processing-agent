@@ -95,16 +95,24 @@ def estimate_llm_cost(
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
 ) -> float:
-    """Return estimated USD cost for one LLM call."""
+    """Return estimated USD cost for one LLM call.
+
+    Anthropic's input_tokens is the total; cache_read and cache_write are subsets.
+    Charge only uncached input at full input rate to avoid double-counting.
+    """
     prices = _get_llm_prices(model_id)
     if prices is None:
         return 0.0
     M = 1_000_000
+    uncached_input = max(
+        0,
+        input_tokens - cache_read_tokens - cache_write_tokens,
+    )
     cost = (
-        input_tokens       * prices["input"]       / M
-        + output_tokens    * prices["output"]      / M
-        + cache_read_tokens  * prices.get("cache_read", 0)  / M
-        + cache_write_tokens * prices.get("cache_write", 0) / M
+        uncached_input       * prices["input"]       / M
+        + output_tokens      * prices["output"]     / M
+        + cache_read_tokens  * prices.get("cache_read", 0)   / M
+        + cache_write_tokens * prices.get("cache_write", 0)   / M
     )
     return cost
 
