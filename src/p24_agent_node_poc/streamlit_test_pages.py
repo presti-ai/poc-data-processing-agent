@@ -204,15 +204,10 @@ def render_manual_page() -> None:
                             destination.write_bytes(uploaded.getvalue())
                             input_paths.append(destination)
 
-                        result_df, messages = process_data(  # Single agent run
-                            input_files=input_paths,
-                            output_columns=output_columns,
-                            additional_instructions=(additional_instructions or None)
-                            if use_additional_instructions
-                            else None,
-                            model_name=model_name,
-                            subagent_model_name=subagent_model_name,
-                        )
+                        result_df, messages = process_data(input_files=input_paths, output_columns=output_columns,
+                                                           additional_instructions=(additional_instructions or None)
+                                                           if use_additional_instructions
+                                                           else None, model_name=model_name)
                 except Exception as exc:
                     st.error(f"Agent run failed: {exc}")
                     raise
@@ -299,15 +294,10 @@ def render_test_case_page(case_key: str) -> None:
         input_paths = [path for _, path, _ in loaded_inputs]
         with st.spinner("Running agent... this may take a few minutes."):
             try:
-                result_df, messages = process_data(
-                    input_files=input_paths,
-                    output_columns=config.output_columns,
-                    additional_instructions=(additional_instructions or None)
-                    if use_additional_instructions
-                    else None,
-                    model_name=model_name,
-                    subagent_model_name=subagent_model_name,
-                )
+                result_df, messages = process_data(input_files=input_paths, output_columns=config.output_columns,
+                                                   additional_instructions=(additional_instructions or None)
+                                                   if use_additional_instructions
+                                                   else None, model_name=model_name)
             except Exception as exc:
                 st.error(f"Agent run failed: {exc}")
                 raise
@@ -399,15 +389,10 @@ def render_uc2_page() -> None:
             input_paths = [path for _, path, _ in loaded_inputs]
             with st.spinner("Running agent... this may take a few minutes."):
                 try:
-                    result_df, messages = process_data(
-                        input_files=input_paths,
-                        output_columns=config.output_columns,
-                        additional_instructions=(additional_instructions or None)
-                        if use_additional_instructions
-                        else None,
-                        model_name=model_name,
-                        subagent_model_name=subagent_model_name,
-                    )
+                    result_df, messages = process_data(input_files=input_paths, output_columns=config.output_columns,
+                                                       additional_instructions=(additional_instructions or None)
+                                                       if use_additional_instructions
+                                                       else None, model_name=model_name)
                 except Exception as exc:
                     st.error(f"Agent run failed: {exc}")
                     raise
@@ -457,17 +442,13 @@ def render_uc2_page() -> None:
         input_path = loaded_inputs[0][1]
         with st.spinner("Running sample (5 rows)... this may take a few minutes."):
             try:
-                phase1_df, _, phase1_msgs, _ = process_data_two_phase(
-                    input_path=input_path,
-                    output_columns=config.output_columns,
-                    additional_instructions=(additional_instructions or None)
-                    if use_additional_instructions
-                    else None,
-                    model_name=model_name,
-                    subagent_model_name=subagent_model_name,
-                    sample_size=5,
-                    validated_phase1_df=None,
-                )
+                phase1_df, _, phase1_msgs, _ = process_data_two_phase(input_path=input_path,
+                                                                      output_columns=config.output_columns,
+                                                                      additional_instructions=(
+                                                                                  additional_instructions or None)
+                                                                      if use_additional_instructions
+                                                                      else None, model_name=model_name, sample_size=5,
+                                                                      validated_phase1_df=None)
                 st.session_state[f"{state_prefix}_phase1_df"] = phase1_df
                 st.session_state[f"{state_prefix}_phase1_messages"] = phase1_msgs
                 st.session_state[f"{state_prefix}_phase2_df"] = None
@@ -494,17 +475,13 @@ def render_uc2_page() -> None:
             "Running full batch (remaining rows)... this may take several minutes."
         ):
             try:
-                _, phase2_df, _, phase2_msgs = process_data_two_phase(
-                    input_path=input_path,
-                    output_columns=config.output_columns,
-                    additional_instructions=(additional_instructions or None)
-                    if use_additional_instructions
-                    else None,
-                    model_name=model_name,
-                    subagent_model_name=subagent_model_name,
-                    sample_size=5,
-                    validated_phase1_df=validated_df,
-                )
+                _, phase2_df, _, phase2_msgs = process_data_two_phase(input_path=input_path,
+                                                                      output_columns=config.output_columns,
+                                                                      additional_instructions=(
+                                                                                  additional_instructions or None)
+                                                                      if use_additional_instructions
+                                                                      else None, model_name=model_name, sample_size=5,
+                                                                      validated_phase1_df=validated_df)
                 st.session_state[f"{state_prefix}_phase2_df"] = phase2_df
                 st.session_state[f"{state_prefix}_phase2_messages"] = phase2_msgs
             except Exception as exc:
@@ -663,13 +640,9 @@ def render_upload_test_case_page(case_key: str, max_rows: int = MAX_UPLOAD_ROWS)
                         p.write_bytes(up.getvalue())
                     with st.spinner("Running agent... this may take a few minutes."):
                         try:
-                            result_df, messages = process_data(
-                                input_files=paths,
-                                output_columns=config.output_columns,
-                                additional_instructions=effective_instructions,
-                                model_name=model_name,
-                                subagent_model_name=subagent_model_name,
-                            )
+                            result_df, messages = process_data(input_files=paths, output_columns=config.output_columns,
+                                                               additional_instructions=effective_instructions,
+                                                               model_name=model_name)
                             st.session_state[f"{state_prefix}_result_df"] = result_df
                             st.session_state[f"{state_prefix}_messages"] = messages
                         except Exception as exc:

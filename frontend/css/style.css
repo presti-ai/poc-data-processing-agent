@@ -575,6 +575,12 @@ body {
     border-radius: 2px;
     width: 30%;
     animation: loadingSlide 1.5s ease-in-out infinite;
+    transition: width 0.2s ease;
+}
+
+.loading-bar-fill.upload-progress {
+    animation: none;
+    transform: none;
 }
 
 @keyframes loadingSlide {

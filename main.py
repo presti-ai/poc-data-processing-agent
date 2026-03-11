@@ -22,8 +22,5 @@ _output_columns = [
 
 additional_instructions = ""
 
-res, messages = process_data(
-    input_files=_inputs,
-    output_columns=_output_columns,
-    additional_instructions=additional_instructions,
-)
+res, messages = process_data(input_files=_inputs, output_columns=_output_columns,
+                             additional_instructions=additional_instructions)

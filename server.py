@@ -24,8 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from p24_agent_node_poc.agent import process_data
-from p24_agent_node_poc.gcs_storage import (
+from src.p24_agent_node_poc.agent import process_data
+from src.p24_agent_node_poc.gcs_storage import (
     append_run,
     delete_run,
     download_from_gcs,
@@ -39,6 +39,7 @@ from p24_agent_node_poc.gcs_storage import (
 
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB hard limit
 
 app = FastAPI(title="P24 Agent API", version="0.1.0")
 
@@ -94,14 +95,9 @@ async def _run_agent_sse(
     def run_in_thread():
         output_gcs_uri = None
         try:
-            result_df, _ = process_data(
-                input_files=input_paths,
-                output_columns=output_columns,
-                additional_instructions=additional_instructions or None,
-                model_name=model_name,
-                subagent_model_name=subagent_model_name or None,
-                on_stream_chunk=on_chunk,
-            )
+            result_df, _ = process_data(input_files=input_paths, output_columns=output_columns,
+                                        additional_instructions=additional_instructions or None, model_name=model_name,
+                                        on_stream_chunk=on_chunk)
             csv_str = result_df.to_csv(index=False)
             try:
                 output_filename = f"output_{run_id}.csv"
@@ -169,9 +165,22 @@ def _safe_filename(name: str) -> str:
     return base if base else "unnamed"
 
 
+def _count_csv_rows(content: bytes) -> int | None:
+    """Return number of data rows in a CSV payload (header excluded)."""
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
+    reader = csv.reader(io.StringIO(text))
+    rows = [row for row in reader if row and any(cell.strip() for cell in row)]
+    if not rows:
+        return 0
+    return max(len(rows) - 1, 0)
+
+
 @app.get("/api/runs")
 def api_runs():
-    """Return run history from GCS (newest first)."""
+    """Return run history from local storage (newest first)."""
     runs = read_runs_history()
     return {"runs": list(reversed(runs))}
 
@@ -256,6 +265,7 @@ async def api_run(request: Request):
     """Run the agent with uploaded files and/or files from history. Returns SSE stream of progress and result."""
     form = await request.form()
     files = form.getlist("files")
+    print(f"[api_run] Form received: {len(files)} file(s)", flush=True)
     history_file_ids = form.get("history_file_ids", "[]")
     output_columns = form.get("output_columns", "[]")
     additional_instructions = form.get("additional_instructions", "") or ""
@@ -304,40 +314,77 @@ async def api_run(request: Request):
     try:
         input_paths: list[Path] = []
         upload_prefix = f"uploads/{run_id}"
+        total_upload_bytes = 0
+        # ZIP image groups: one entry per directory → becomes one CSV per directory
+        # Each entry: {"csv_name": "dirname.csv", "images": [(local_path, basename), ...]}
+        pending_image_groups: list[dict] = []
 
         for i, f in enumerate(files):
             content = await f.read()
+            total_upload_bytes += len(content)
+            if total_upload_bytes > MAX_UPLOAD_BYTES:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": f"Total upload size exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit."},
+                )
             filename = f.filename or f"input_{i}.csv"
             if filename.lower().endswith(".zip"):
+                zip_stem = Path(_safe_filename(filename)).stem  # e.g. "produits"
+                zip_images: list[tuple[Path, str]] = []  # (local_path, display_name)
                 with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
                     for name in zf.namelist():
                         if name.endswith("/"):
                             continue
-                        safe = _safe_filename(name)
-                        ext = Path(safe).suffix.lower()
+                        zip_path = Path(name)
+                        # Skip macOS metadata and any hidden files
+                        if any(p.startswith("__") or p.startswith(".") for p in zip_path.parts):
+                            continue
+                        safe_base = _safe_filename(zip_path.name)
+                        ext = Path(safe_base).suffix.lower()
                         if ext not in ALLOWED_EXTENSIONS and ext not in AGENT_EXTENSIONS:
                             continue
-                        blob_path = f"{upload_prefix}/{safe}"
-                        try:
-                            gcs_uri = upload_to_haithem(zf.read(name), blob_path, _guess_content_type(safe))
-                            input_infos.append({"name": safe, "gcs_uri": gcs_uri})
-                            dest = Path(tmpdir) / safe
+                        file_bytes = zf.read(name)
+                        if ext in IMAGE_EXTENSIONS:
+                            # display_name: strip first path component (the ZIP's top-level folder)
+                            # so "produits/img.jpg" → "img.jpg"
+                            # and "produits/croquis et lieu/img.jpg" → "croquis et lieu/img.jpg"
+                            rel_parts = zip_path.parts[1:] if len(zip_path.parts) > 1 else zip_path.parts
+                            display_name = "/".join(rel_parts)
+                            # Save with a flat safe name to avoid path issues on disk
+                            dest = Path(tmpdir) / "zip_imgs" / safe_base
+                            dest.parent.mkdir(exist_ok=True)
                             counter = 0
                             while dest.exists():
                                 counter += 1
-                                dest = Path(tmpdir) / f"{Path(safe).stem}_{counter}{ext}"
-                            dest.write_bytes(zf.read(name))
+                                dest = dest.parent / f"{Path(safe_base).stem}_{counter}{ext}"
+                            dest.write_bytes(file_bytes)
+                            zip_images.append((dest, display_name))
+                        else:
+                            info: dict = {"name": safe_base}
+                            if ext == ".csv":
+                                row_count = _count_csv_rows(file_bytes)
+                                if row_count is not None:
+                                    info["row_count"] = row_count
+                            input_infos.append(info)
+                            dest = Path(tmpdir) / safe_base
+                            counter = 0
+                            while dest.exists():
+                                counter += 1
+                                dest = Path(tmpdir) / f"{Path(safe_base).stem}_{counter}{ext}"
+                            dest.write_bytes(file_bytes)
                             input_paths.append(dest)
-                        except Exception:
-                            continue
+                if zip_images:
+                    pending_image_groups.append({"csv_name": f"preprocessed_{zip_stem}.csv", "images": zip_images})
             else:
                 safe = _safe_filename(filename)
-                blob_path = f"{upload_prefix}/{safe}"
-                try:
-                    gcs_uri = upload_to_haithem(content, blob_path, _guess_content_type(safe))
-                    input_infos.append({"name": safe, "gcs_uri": gcs_uri})
-                except Exception:
-                    pass
+                ext = Path(safe).suffix.lower()
+                info = {"name": safe}
+                if ext == ".csv":
+                    row_count = _count_csv_rows(content)
+                    if row_count is not None:
+                        info["row_count"] = row_count
+                input_infos.append(info)
                 dest = Path(tmpdir) / (safe or f"input_{i}.csv")
                 dest.write_bytes(content)
                 input_paths.append(dest)
@@ -351,7 +398,12 @@ async def api_run(request: Request):
                 ext = Path(name).suffix.lower()
                 if ext not in AGENT_EXTENSIONS:
                     continue
-                input_infos.append({"name": name, "gcs_uri": gcs_uri})
+                info = {"name": name, "gcs_uri": gcs_uri}
+                if ext == ".csv":
+                    row_count = _count_csv_rows(content)
+                    if row_count is not None:
+                        info["row_count"] = row_count
+                input_infos.append(info)
                 dest = Path(tmpdir) / name
                 counter = 0
                 while dest.exists():
@@ -362,48 +414,120 @@ async def api_run(request: Request):
             except Exception:
                 continue
 
-        # Pre-process: when 2+ images, upload to GCS, create input_images.csv, replace image inputs
-        if len(input_paths) == len(input_infos):
-            entries = list(zip(input_paths, input_infos))
-            image_entries = [(p, i) for p, i in entries if Path(i["name"]).suffix.lower() in IMAGE_EXTENSIONS]
-            other_entries = [(p, i) for p, i in entries if Path(i["name"]).suffix.lower() not in IMAGE_EXTENSIONS]
-            if len(image_entries) >= 2:
-                rows = []
-                for path, info in image_entries:
-                    try:
-                        data = path.read_bytes()
-                        content_type = _guess_content_type(info["name"]) or "image/jpeg"
-                        blob_path = f"run_inputs/{run_id}/{info['name']}"
-                        public_url = upload_image_from_bytes(data, blob_path, content_type)
-                        rows.append({"image_name": info["name"], "image_url": public_url})
-                    except Exception:
-                        continue
-                if rows:
-                    csv_path = Path(tmpdir) / "input_images.csv"
-                    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                        writer = csv.DictWriter(f, fieldnames=["image_name", "image_url"])
-                        writer.writeheader()
-                        writer.writerows(rows)
-                    csv_bytes = csv_path.read_bytes()
-                    csv_gcs_uri = upload_to_haithem(
-                        csv_bytes, f"{upload_prefix}/input_images.csv", "text/csv"
-                    )
-                    input_paths = [csv_path] + [p for p, _ in other_entries]
-                    input_infos = [{"name": "input_images.csv", "gcs_uri": csv_gcs_uri}] + [
-                        i for _, i in other_entries
-                    ]
+        # Separate directly-uploaded images from non-image files
+        # (ZIP images are already in pending_image_groups and NOT in input_paths)
+        entries = list(zip(input_paths, input_infos))
+        direct_image_entries = [(p, i) for p, i in entries if Path(i["name"]).suffix.lower() in IMAGE_EXTENSIONS]
+        other_entries = [(p, i) for p, i in entries if Path(i["name"]).suffix.lower() not in IMAGE_EXTENSIONS]
+
+        print(
+            f"[api_run] {len(other_entries)} non-image file(s), {len(pending_image_groups)} ZIP group(s), "
+            f"{len(direct_image_entries)} direct image(s) — starting SSE stream",
+            flush=True,
+        )
 
         async def stream_with_cleanup():
+            # Start with non-image files; CSVs are appended as each group is processed
+            final_input_paths = [p for p, _ in other_entries]
+            final_input_infos = [i for _, i in other_entries]
+            generated_image_csvs: list[str] = []  # names of image CSVs created during pre-processing
             try:
+                async def _upload_image_file(path: Path, display_name: str) -> dict | None:
+                    try:
+                        data = await asyncio.to_thread(path.read_bytes)
+                        content_type = _guess_content_type(path.name) or "image/jpeg"
+                        # GCS path mirrors display_name (may include subfolder, e.g. "croquis et lieu/img.jpg")
+                        blob_path = f"run_inputs/{run_id}/{display_name}"
+                        public_url = await asyncio.to_thread(
+                            upload_image_from_bytes, data, blob_path, content_type
+                        )
+                        return {"image_name": display_name, "image_url": public_url}
+                    except Exception:
+                        return None
+
+                # ZIP groups: one CSV per ZIP file
+                for group in pending_image_groups:
+                    csv_name = group["csv_name"]
+                    images: list[tuple[Path, str]] = group["images"]
+                    yield _sse_event({"type": "status", "message": f"Uploading {len(images)} images for {csv_name}…"})
+                    print(f"[api_run] Uploading {len(images)} images for {csv_name}", flush=True)
+                    results = await asyncio.gather(
+                        *[_upload_image_file(p, n) for p, n in images]
+                    )
+                    rows = [r for r in results if r is not None]
+                    if rows:
+                        csv_path = Path(tmpdir) / csv_name
+                        with open(csv_path, "w", newline="", encoding="utf-8") as csv_f:
+                            writer = csv.DictWriter(csv_f, fieldnames=["image_name", "image_url"])
+                            writer.writeheader()
+                            writer.writerows(rows)
+                        final_input_paths.append(csv_path)
+                        generated_image_csvs.append(csv_name)
+                        try:
+                            csv_bytes = csv_path.read_bytes()
+                            csv_gcs_uri = await asyncio.to_thread(
+                                upload_to_haithem, csv_bytes, f"{upload_prefix}/{csv_name}", "text/csv"
+                            )
+                            final_input_infos.append({"name": csv_name, "gcs_uri": csv_gcs_uri})
+                        except Exception:
+                            final_input_infos.append({"name": csv_name})
+                        print(f"[api_run] {len(rows)}/{len(images)} uploaded → {csv_name}", flush=True)
+
+                # Directly uploaded images (2+) → single input_images.csv
+                if len(direct_image_entries) >= 1:
+                    yield _sse_event({"type": "status", "message": f"Uploading {len(direct_image_entries)} images to cloud…"})
+                    print(f"[api_run] Uploading {len(direct_image_entries)} direct images to GCS", flush=True)
+                    results = await asyncio.gather(
+                        *[_upload_image_file(p, i["name"]) for p, i in direct_image_entries]
+                    )
+                    rows = [r for r in results if r is not None]
+                    if rows:
+                        csv_path = Path(tmpdir) / "preprocessed_input_images.csv"
+                        with open(csv_path, "w", newline="", encoding="utf-8") as csv_f:
+                            writer = csv.DictWriter(csv_f, fieldnames=["image_name", "image_url"])
+                            writer.writeheader()
+                            writer.writerows(rows)
+                        final_input_paths.append(csv_path)
+                        generated_image_csvs.append("preprocessed_input_images.csv")
+                        try:
+                            csv_bytes = csv_path.read_bytes()
+                            csv_gcs_uri = await asyncio.to_thread(
+                                upload_to_haithem, csv_bytes, f"{upload_prefix}/preprocessed_input_images.csv", "text/csv"
+                            )
+                            final_input_infos.append({"name": "preprocessed_input_images.csv", "gcs_uri": csv_gcs_uri})
+                        except Exception:
+                            final_input_infos.append({"name": "preprocessed_input_images.csv"})
+                        print(f"[api_run] {len(rows)} direct images → preprocessed_input_images.csv", flush=True)
+
+                # Build a note for the agent about every image CSV that was generated
+                image_csv_note = ""
+                if generated_image_csvs:
+                    lines = [
+                        "The following CSV file(s) were pre-generated from your input and are available in the workspace:"
+                    ]
+                    for name in generated_image_csvs:
+                        lines.append(
+                            f"- `{name}`: two columns — `image_name` (relative path, e.g. 'subfolder/photo.jpg') "
+                            f"and `image_url` (public GCS URL). Use `image_url` directly; do not re-upload or re-fetch."
+                        )
+                    image_csv_note = "\n".join(lines)
+
+                effective_instructions = "\n\n".join(
+                    filter(None, [additional_instructions or "", image_csv_note])
+                ) or None
+
+                yield _sse_event({"type": "status", "message": "Starting agent…"})
+                print(f"[api_run] Starting agent for run {run_id}", flush=True)
+
                 async for chunk in _run_agent_sse(
-                    input_paths=input_paths,
+                    input_paths=final_input_paths,
                     output_columns=columns,
-                    additional_instructions=additional_instructions or None,
+                    additional_instructions=effective_instructions,
                     model_name=model_name,
                     subagent_model_name=subagent_model_name or None,
                     run_id=run_id,
                     start_time=start_time,
-                    input_infos=input_infos,
+                    input_infos=final_input_infos,
                     params=params,
                 ):
                     yield chunk
