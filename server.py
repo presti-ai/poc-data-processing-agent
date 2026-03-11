@@ -375,7 +375,7 @@ async def api_run(request: Request):
                             dest.write_bytes(file_bytes)
                             input_paths.append(dest)
                 if zip_images:
-                    pending_image_groups.append({"csv_name": f"{zip_stem}.csv", "images": zip_images})
+                    pending_image_groups.append({"csv_name": f"preprocessed_{zip_stem}.csv", "images": zip_images})
             else:
                 safe = _safe_filename(filename)
                 ext = Path(safe).suffix.lower()
@@ -430,6 +430,7 @@ async def api_run(request: Request):
             # Start with non-image files; CSVs are appended as each group is processed
             final_input_paths = [p for p, _ in other_entries]
             final_input_infos = [i for _, i in other_entries]
+            generated_image_csvs: list[str] = []  # names of image CSVs created during pre-processing
             try:
                 async def _upload_image_file(path: Path, display_name: str) -> dict | None:
                     try:
@@ -461,6 +462,7 @@ async def api_run(request: Request):
                             writer.writeheader()
                             writer.writerows(rows)
                         final_input_paths.append(csv_path)
+                        generated_image_csvs.append(csv_name)
                         try:
                             csv_bytes = csv_path.read_bytes()
                             csv_gcs_uri = await asyncio.to_thread(
@@ -480,21 +482,39 @@ async def api_run(request: Request):
                     )
                     rows = [r for r in results if r is not None]
                     if rows:
-                        csv_path = Path(tmpdir) / "input_images.csv"
+                        csv_path = Path(tmpdir) / "preprocessed_input_images.csv"
                         with open(csv_path, "w", newline="", encoding="utf-8") as csv_f:
                             writer = csv.DictWriter(csv_f, fieldnames=["image_name", "image_url"])
                             writer.writeheader()
                             writer.writerows(rows)
                         final_input_paths.append(csv_path)
+                        generated_image_csvs.append("preprocessed_input_images.csv")
                         try:
                             csv_bytes = csv_path.read_bytes()
                             csv_gcs_uri = await asyncio.to_thread(
-                                upload_to_haithem, csv_bytes, f"{upload_prefix}/input_images.csv", "text/csv"
+                                upload_to_haithem, csv_bytes, f"{upload_prefix}/preprocessed_input_images.csv", "text/csv"
                             )
-                            final_input_infos.append({"name": "input_images.csv", "gcs_uri": csv_gcs_uri})
+                            final_input_infos.append({"name": "preprocessed_input_images.csv", "gcs_uri": csv_gcs_uri})
                         except Exception:
-                            final_input_infos.append({"name": "input_images.csv"})
-                        print(f"[api_run] {len(rows)} direct images → input_images.csv", flush=True)
+                            final_input_infos.append({"name": "preprocessed_input_images.csv"})
+                        print(f"[api_run] {len(rows)} direct images → preprocessed_input_images.csv", flush=True)
+
+                # Build a note for the agent about every image CSV that was generated
+                image_csv_note = ""
+                if generated_image_csvs:
+                    lines = [
+                        "The following CSV file(s) were pre-generated from your input and are available in the workspace:"
+                    ]
+                    for name in generated_image_csvs:
+                        lines.append(
+                            f"- `{name}`: two columns — `image_name` (relative path, e.g. 'subfolder/photo.jpg') "
+                            f"and `image_url` (public GCS URL). Use `image_url` directly; do not re-upload or re-fetch."
+                        )
+                    image_csv_note = "\n".join(lines)
+
+                effective_instructions = "\n\n".join(
+                    filter(None, [additional_instructions or "", image_csv_note])
+                ) or None
 
                 yield _sse_event({"type": "status", "message": "Starting agent…"})
                 print(f"[api_run] Starting agent for run {run_id}", flush=True)
@@ -502,7 +522,7 @@ async def api_run(request: Request):
                 async for chunk in _run_agent_sse(
                     input_paths=final_input_paths,
                     output_columns=columns,
-                    additional_instructions=additional_instructions or None,
+                    additional_instructions=effective_instructions,
                     model_name=model_name,
                     subagent_model_name=subagent_model_name or None,
                     run_id=run_id,

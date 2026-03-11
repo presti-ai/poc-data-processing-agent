@@ -33,7 +33,7 @@ General instructions:
 - Ensure 'output.csv' contains the required columns and is saved before ending.
 - Before sending the final 'output.csv', ensure all urls in the file exist and are accessible (i.e. not 404).
 - When the output requires image URLs and you have local image files in the workspace, use the Upload_file_gcs tool.
-- When 'input_images.csv' is present, it lists image names and their GCS URLs (image_name, image_url columns). Use those URLs directly; you do not need to upload local images.
+- Any input CSV with prefix 'preprocessed_' has two columns: 'image_name' (relative path) and 'image_url' (pre-uploaded GCS public URL). Use image_url values directly; do not re-upload or re-fetch those images.
 - Do not use {PythonREPLTool().name} to fetch urls, prefer {fetch_firecrawl.name}.
 
 Web fetching delegation policy (mandatory):
