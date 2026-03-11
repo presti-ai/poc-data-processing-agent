@@ -474,7 +474,7 @@ async def api_run(request: Request):
                         print(f"[api_run] {len(rows)}/{len(images)} uploaded → {csv_name}", flush=True)
 
                 # Directly uploaded images (2+) → single input_images.csv
-                if len(direct_image_entries) >= 2:
+                if len(direct_image_entries) >= 1:
                     yield _sse_event({"type": "status", "message": f"Uploading {len(direct_image_entries)} images to cloud…"})
                     print(f"[api_run] Uploading {len(direct_image_entries)} direct images to GCS", flush=True)
                     results = await asyncio.gather(

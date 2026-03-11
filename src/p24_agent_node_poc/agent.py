@@ -173,7 +173,7 @@ def process_data(
                 )
 
             # DeepAgents: main agent + subagent for URL batch fetching (reduces context size)
-            backend = FilesystemBackend(root_dir=workspace_root, virtual_mode=True)
+            backend = FilesystemBackend(root_dir=workspace_root, virtual_mode=False)
             agent = create_deep_agent(
                 model=model_name,
                 tools=tools,
