@@ -202,6 +202,33 @@ def api_run_delete(run_id: str):
     return {"ok": True}
 
 
+@app.get("/api/runs/{run_id}/inputs/{filename}")
+def api_input_download(run_id: str, filename: str):
+    """Download an input file from a previous run by filename."""
+    run = get_run(run_id)
+    if run is None:
+        return JSONResponse(status_code=404, content={"error": "Run not found."})
+    safe_name = Path(filename).name
+    inputs = run.get("inputs", [])
+    match = next((i for i in inputs if Path(i.get("name", "")).name == safe_name), None)
+    if match is None:
+        return JSONResponse(status_code=404, content={"error": "Input not found."})
+    gcs_uri = match.get("gcs_uri")
+    if not gcs_uri:
+        return JSONResponse(status_code=404, content={"error": "No stored file for this input."})
+    try:
+        content = download_from_gcs(gcs_uri)
+        ext = Path(safe_name).suffix.lower()
+        media_type = "text/csv" if ext == ".csv" else "application/octet-stream"
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 OUTPUT_DIR = Path(__file__).parent / "data" / "output"
 
 

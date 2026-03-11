@@ -179,8 +179,27 @@ body {
 
 .preset-actions {
     display: flex;
+    align-items: center;
     gap: 0.5rem;
     flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+#downloadInputsLinks {
+    display: contents;
+}
+
+.download-input-btn {
+    gap: 0.35rem;
+}
+
+.download-input-btn .download-icon {
+    flex-shrink: 0;
+    color: var(--color-primary);
+}
+
+.download-input-btn:hover .download-icon {
+    color: var(--color-text);
 }
 
 /* === Use case cards === */
@@ -861,6 +880,7 @@ details[open] .advanced-summary::before {
     transition: all 0.15s;
     font-family: inherit;
 }
+
 
 .runs-row:hover .delete-run-btn {
     opacity: 1;
