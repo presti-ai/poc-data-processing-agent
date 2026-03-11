@@ -197,6 +197,7 @@ def fetch_firecrawl(url: str) -> str:
 
         markdown = result.get("markdown") or ""
         links = result.get("links") or []
+        credits_used: int = result.get("credits_used") or 0
 
         if not markdown and not links:
             return _json_result(
@@ -204,6 +205,7 @@ def fetch_firecrawl(url: str) -> str:
                 url,
                 fetched_via="firecrawl",
                 error=f"Firecrawl returned no content for {url}",
+                extra={"credits_used": credits_used} if credits_used else None,
             )
 
         output = markdown
@@ -220,9 +222,10 @@ def fetch_firecrawl(url: str) -> str:
         )
 
     logger.info(
-        "Fetch_firecrawl success: {} chars, {} links -> {}",
+        "Fetch_firecrawl success: {} chars, {} links, {} credits -> {}",
         len(markdown),
         len(links),
+        credits_used,
         html_file_path,
     )
     return _json_result(
@@ -230,7 +233,7 @@ def fetch_firecrawl(url: str) -> str:
         url,
         files=[{"path": html_file_path, "type": "markdown"}],
         fetched_via="firecrawl",
-        extra={"char_count": len(output), "links_count": len(links)},
+        extra={"char_count": len(output), "links_count": len(links), "credits_used": credits_used},
     )
 
 

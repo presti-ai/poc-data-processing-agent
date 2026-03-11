@@ -25,6 +25,7 @@ from loguru import logger
 
 from p24_agent_node_poc.agent_constants import (get_agent_messages, RATE_LIMIT_RETRIES, RATE_LIMIT_WAIT, subagents, SYSTEM_PROMPT, tools)
 from p24_agent_node_poc.agent_logging import _debug_log, _serialize_chunk_for_sse
+from p24_agent_node_poc.cost_tracker import CostTracker
 from p24_agent_node_poc.image_migration import migrate_image_urls_in_dataframe
 
 load_dotenv()  # Load API keys from .env (TAVILY_API_KEY, etc.)
@@ -44,11 +45,12 @@ def process_data(
     model_name: str = "anthropic:claude-opus-4-6",
     save_output_dir: Optional[Path | str] = None,
     on_stream_chunk: Optional[Callable[[str, dict], None]] = None,
-) -> tuple[pd.DataFrame, List[Dict[str, str]]]:
+) -> tuple[pd.DataFrame, List[Dict[str, str]], dict]:
     """
     Main entry point: process input CSVs and produce output.csv with the requested columns.
     Optionally accepts a validated_sample.csv (example_output_path) to guide the agent.
     When save_output_dir is None, saves output to data/output/ with a timestamped filename.
+    Returns (result_df, message_log, cost_summary).
     """
     logger.info("Starting data processing task")
 
@@ -184,6 +186,7 @@ def process_data(
 
             logger.info("Invoking agent stream")
             message_log = []
+            cost_tracker = CostTracker()
 
             for attempt in range(RATE_LIMIT_RETRIES):
                 try:
@@ -228,6 +231,17 @@ def process_data(
                         if model_chunk := chunk.get("model"):
                             for msg in model_chunk.get("messages", []):
                                 msg: AIMessage
+                                # Track token usage per LLM call
+                                if msg.usage_metadata:
+                                    meta = msg.usage_metadata
+                                    details = meta.get("input_token_details", {}) or {}
+                                    cost_tracker.record_llm(
+                                        model_id=model_name,
+                                        input_tokens=meta.get("input_tokens", 0),
+                                        output_tokens=meta.get("output_tokens", 0),
+                                        cache_read_tokens=details.get("cache_read", 0),
+                                        cache_write_tokens=details.get("cache_creation", 0),
+                                    )
                                 if msg.content:
                                     text = (
                                         msg.content
@@ -270,6 +284,15 @@ def process_data(
                                 logger.info(
                                     "Tool {} - {}...", msg.name, str(msg.content)[:50]
                                 )
+                                # Track Firecrawl credits from tool result JSON
+                                if msg.name == "Fetch_firecrawl":
+                                    try:
+                                        import json as _json
+                                        parsed = _json.loads(msg.content if isinstance(msg.content, str) else "")
+                                        if isinstance(parsed, dict) and parsed.get("credits_used"):
+                                            cost_tracker.record_firecrawl(int(parsed["credits_used"]))
+                                    except Exception:
+                                        pass
                                 if debug_file:
                                     _debug_log(
                                         debug_file,
@@ -345,14 +368,22 @@ def process_data(
             result_df.to_csv(saved_path, index=False)
             logger.info("Output saved to {}", saved_path)
 
+            cost_summary = cost_tracker.summary()
+            logger.info(
+                "Estimated cost: ${} (LLM) + ${} (Firecrawl) = ${} total",
+                round(sum(v["estimated_usd"] for v in cost_summary["llm"].values()), 4),
+                round(cost_summary["firecrawl"]["estimated_usd"], 4),
+                round(cost_summary["total_estimated_usd"], 4),
+            )
+
             if debug_file:
                 _debug_log(
                     debug_file,
                     "RUN COMPLETE",
-                    f"rows={len(result_df)}, cols={len(result_df.columns)}, messages={len(message_log)}, saved_to={saved_path}",
+                    f"rows={len(result_df)}, cols={len(result_df.columns)}, messages={len(message_log)}, saved_to={saved_path}\ncost={cost_summary}",
                     truncate=False,
                 )
-            return result_df, message_log
+            return result_df, message_log, cost_summary
         finally:
             if loguru_sink_id is not None:
                 try:
@@ -403,7 +434,7 @@ def process_data_two_phase(
             sample_df.to_csv(f, index=False)
             sample_path = Path(f.name)
         try:
-            phase1_df, phase1_messages = process_data(
+            phase1_df, phase1_messages, _ = process_data(
                 input_files=[sample_path],
                 output_columns=output_columns,
                 additional_instructions=additional_instructions,
@@ -432,7 +463,7 @@ def process_data_two_phase(
         validated_path = Path(f_val.name)
 
     try:
-        phase2_df, phase2_messages = process_data(
+        phase2_df, phase2_messages, _ = process_data(
             input_files=[remaining_path],
             output_columns=output_columns,
             additional_instructions=additional_instructions,

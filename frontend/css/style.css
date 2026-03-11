@@ -751,6 +751,11 @@ details[open] .advanced-summary::before {
     background: var(--color-error-bg);
 }
 
+.message-block.message-cost {
+    border-left-color: #f59e0b;
+    background: #fffbeb;
+}
+
 .message-block details > summary {
     padding: 0.5rem 0.75rem;
     cursor: pointer;
@@ -847,6 +852,24 @@ details[open] .advanced-summary::before {
 
 .runs-row:last-child td {
     border-bottom: none;
+}
+
+.cost-badge {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: #92400e;
+    background: #fef3c7;
+    border: 1px solid #fde68a;
+    border-radius: var(--radius-sm);
+    padding: 0.15rem 0.45rem;
+    cursor: default;
+    white-space: nowrap;
+}
+
+.cost-badge-na {
+    color: var(--color-text-muted);
+    background: transparent;
+    border-color: transparent;
 }
 
 .status-badge {

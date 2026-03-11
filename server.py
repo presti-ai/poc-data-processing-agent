@@ -95,7 +95,7 @@ async def _run_agent_sse(
     def run_in_thread():
         output_gcs_uri = None
         try:
-            result_df, _ = process_data(input_files=input_paths, output_columns=output_columns,
+            result_df, _, cost_summary = process_data(input_files=input_paths, output_columns=output_columns,
                                         additional_instructions=additional_instructions or None, model_name=model_name,
                                         on_stream_chunk=on_chunk)
             csv_str = result_df.to_csv(index=False)
@@ -105,9 +105,9 @@ async def _run_agent_sse(
                 output_gcs_uri = upload_to_haithem(csv_str.encode("utf-8"), blob_path, "text/csv")
             except Exception:
                 pass
-            queue.put(("done", {"csv": csv_str, "error": None, "output_gcs_uri": output_gcs_uri}))
+            queue.put(("done", {"csv": csv_str, "error": None, "output_gcs_uri": output_gcs_uri, "cost": cost_summary}))
         except Exception as e:
-            queue.put(("done", {"csv": None, "error": str(e), "output_gcs_uri": None}))
+            queue.put(("done", {"csv": None, "error": str(e), "output_gcs_uri": None, "cost": None}))
 
     task = asyncio.to_thread(run_in_thread)
     run_task = asyncio.create_task(task)
@@ -140,6 +140,7 @@ async def _run_agent_sse(
                     "duration_seconds": round(duration_seconds, 2),
                     "status": status,
                     "params": params,
+                    "cost": payload.get("cost"),
                 }
                 try:
                     append_run(run_entry)

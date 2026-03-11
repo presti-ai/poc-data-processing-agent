@@ -495,6 +495,33 @@ function showError(msg) {
   panel.appendChild(div);
 }
 
+function showCostSummary(cost) {
+  const panel = document.getElementById("messagesPanel");
+  panel.querySelector(".empty-hint")?.remove();
+
+  const llmLines = Object.entries(cost.llm || {}).map(([model, u]) =>
+    `${escapeHtml(model)}: ${u.input_tokens.toLocaleString()} in + ${u.output_tokens.toLocaleString()} out → $${u.estimated_usd.toFixed(4)}`
+  ).join("<br>");
+
+  const firecrawl = cost.firecrawl || {};
+  const firecrawlLine = firecrawl.credits_used > 0
+    ? `Firecrawl: ${firecrawl.credits_used} credit(s) → $${firecrawl.estimated_usd.toFixed(4)}`
+    : null;
+
+  const lines = [llmLines, firecrawlLine].filter(Boolean).join("<br>");
+
+  const div = document.createElement("div");
+  div.className = "message-block message-cost";
+  div.innerHTML = `
+    <details open>
+      <summary>💰 Estimated cost — $${cost.total_estimated_usd.toFixed(4)} (~€${cost.total_estimated_eur.toFixed(4)})</summary>
+      <div class="content">${lines}</div>
+    </details>
+  `;
+  panel.appendChild(div);
+  panel.scrollTop = panel.scrollHeight;
+}
+
 // ─── Output ───────────────────────────────────────────────────────────────────
 function showOutput(csv, sectionId = "outputSection", tableId = "outputTableWrap", successId = "outputSuccess", downloadId = "downloadLink") {
   const section = document.getElementById(sectionId);
@@ -658,6 +685,7 @@ function streamRun(formData, onDone) {
             setLoading(false);
             if (ev.error) showError(ev.error);
             else if (ev.csv) onDone(ev.csv);
+            if (ev.cost) showCostSummary(ev.cost);
             resolve();
           }
         } catch (_) {}
@@ -713,7 +741,7 @@ async function loadRuns() {
     let html = `
       <table class="runs-table">
         <thead><tr>
-          <th>Date</th><th>Inputs</th><th>Duration</th><th>Status</th><th></th>
+          <th>Date</th><th>Inputs</th><th>Duration</th><th>Est. cost</th><th>Status</th><th></th>
         </tr></thead>
         <tbody>
     `;
@@ -724,11 +752,16 @@ async function loadRuns() {
       const status = r.status || "unknown";
       const statusClass = status === "completed" ? "status-completed" : "status-failed";
       const runId = r.id || "";
+      const cost = r.cost;
+      const costCell = cost
+        ? `<span class="cost-badge" title="${buildCostTooltip(cost)}">$${cost.total_estimated_usd.toFixed(4)}</span>`
+        : `<span class="cost-badge cost-badge-na">—</span>`;
       html += `
         <tr class="runs-row" data-run-id="${escapeHtml(runId)}">
           <td>${escapeHtml(date)}</td>
           <td>${escapeHtml(inputs)}</td>
           <td>${escapeHtml(duration)}</td>
+          <td>${costCell}</td>
           <td><span class="status-badge ${statusClass}">${escapeHtml(status)}</span></td>
           <td><button type="button" class="delete-run-btn" data-run-id="${escapeHtml(runId)}" title="Delete">Delete</button></td>
         </tr>
@@ -761,6 +794,18 @@ async function loadRuns() {
 }
 
 // ─── String helpers ───────────────────────────────────────────────────────────
+function buildCostTooltip(cost) {
+  const lines = [];
+  for (const [model, u] of Object.entries(cost.llm || {})) {
+    lines.push(`${model}: ${u.input_tokens.toLocaleString()} in + ${u.output_tokens.toLocaleString()} out → $${u.estimated_usd.toFixed(4)}`);
+  }
+  if ((cost.firecrawl?.credits_used || 0) > 0) {
+    lines.push(`Firecrawl: ${cost.firecrawl.credits_used} credit(s) → $${cost.firecrawl.estimated_usd.toFixed(4)}`);
+  }
+  lines.push(`≈ €${cost.total_estimated_eur.toFixed(4)}`);
+  return lines.join("\n");
+}
+
 function truncateFilename(name, maxLen) {
   if (name.length <= maxLen) return name;
   const dot = name.lastIndexOf(".");
