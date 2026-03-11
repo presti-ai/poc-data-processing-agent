@@ -410,6 +410,14 @@ function applyRerunPreset(run) {
     document.getElementById("additionalInstructions").value = params.additional_instructions;
   }
 
+  const downloadLinks = document.getElementById("downloadInputsLinks");
+  if (downloadLinks) {
+    const downloadable = (run.inputs || []).filter((i) => i.gcs_uri);
+    downloadLinks.innerHTML = downloadable.map((i) =>
+      `<a class="btn btn-outline btn-sm download-input-btn" href="/api/runs/${encodeURIComponent(run.id)}/inputs/${encodeURIComponent(i.name)}" download="${escapeHtml(i.name)}" title="${escapeHtml(i.name)}"><svg class="download-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span class="download-filename">${escapeHtml(truncateFilename(i.name, 18))}</span></a>`
+    ).join("");
+  }
+
   section.hidden = false;
   document.getElementById("runButton").hidden = true;
   document.getElementById("rerunButton").hidden = false;
@@ -420,6 +428,8 @@ function clearRerunPreset() {
   document.getElementById("rerunPresetSection").hidden = true;
   document.getElementById("runButton").hidden = false;
   document.getElementById("rerunButton").hidden = true;
+  const downloadLinks = document.getElementById("downloadInputsLinks");
+  if (downloadLinks) downloadLinks.innerHTML = "";
   document.getElementById("outputSection").hidden = true;
   if (getRoute().page === "rerun") window.location.hash = "#/";
 }
@@ -748,6 +758,16 @@ async function loadRuns() {
   } catch (e) {
     wrap.innerHTML = `<p class="empty-hint">Failed to load runs: ${escapeHtml(e.message)}</p>`;
   }
+}
+
+// ─── String helpers ───────────────────────────────────────────────────────────
+function truncateFilename(name, maxLen) {
+  if (name.length <= maxLen) return name;
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot) : "";
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const keep = maxLen - ext.length - 1; // 1 for "…"
+  return keep > 0 ? base.slice(0, keep) + "…" + ext : name.slice(0, maxLen - 1) + "…";
 }
 
 // ─── CSV helpers ──────────────────────────────────────────────────────────────
