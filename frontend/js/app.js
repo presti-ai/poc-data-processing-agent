@@ -425,11 +425,12 @@ function clearRerunPreset() {
 }
 
 // ─── Loading state ────────────────────────────────────────────────────────────
-function setLoading(loading, statusText) {
+function setLoading(loading, statusText, uploadProgress) {
   const runBtn = document.getElementById("runButton");
   const rerunBtn = document.getElementById("rerunButton");
   const phase2Btn = document.getElementById("phase2Button");
   const bar = document.getElementById("loading");
+  const fill = bar?.querySelector(".loading-bar-fill");
   const status = document.getElementById("loadingStatus");
   if (runBtn) runBtn.disabled = loading;
   if (rerunBtn) rerunBtn.disabled = loading;
@@ -438,6 +439,15 @@ function setLoading(loading, statusText) {
   if (status) {
     status.hidden = !loading;
     if (statusText) status.textContent = statusText;
+  }
+  if (fill) {
+    if (typeof uploadProgress === "number") {
+      fill.classList.add("upload-progress");
+      fill.style.width = `${uploadProgress}%`;
+    } else {
+      fill.classList.remove("upload-progress");
+      fill.style.width = "";
+    }
   }
 }
 
@@ -547,7 +557,7 @@ async function runAgent(isRerun) {
     formData.append("model_name", modelName);
     formData.append("subagent_model_name", subagentModelName);
 
-    setLoading(true, "Processing…");
+    setLoading(true, "Uploading…", 0);
     clearMessages();
     const outputSection = document.getElementById("outputSection");
     if (outputSection) outputSection.hidden = true;
@@ -562,30 +572,37 @@ async function runAgent(isRerun) {
   }
 }
 
-async function streamRun(formData, onDone) {
-  try {
-    const response = await fetch("/api/run", { method: "POST", body: formData });
-
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({ error: response.statusText }));
-      let msg = err.error || "Request failed";
-      if (response.status === 422 && err.detail) {
-        const parts = Array.isArray(err.detail)
-          ? err.detail.map((d) => `${d.loc?.join(".") || "?"}: ${d.msg || ""}`)
-          : [String(err.detail)];
-        msg = `Validation error: ${parts.join("; ")}`;
-      }
-      throw new Error(msg);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
+function streamRun(formData, onDone) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/run");
+    let processed = 0;
     let buffer = "";
+    let agentStarted = false;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+    // Phase 1: upload progress (browser → server)
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && e.total > 0) {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        setLoading(true, `Uploading… ${pct}%`, pct);
+      }
+    };
+
+    // Phase 2: upload done, server is now processing (ZIP extraction, GCS uploads)
+    xhr.upload.onload = () => {
+      setLoading(true, "Preparing files…");
+    };
+
+    xhr.upload.onerror = () => {
+      showError("Upload failed — check your connection and try again.");
+      setLoading(false);
+      resolve();
+    };
+
+    function parseSSE() {
+      const newText = xhr.responseText.slice(processed);
+      processed = xhr.responseText.length;
+      buffer += newText;
       const events = buffer.split("\n\n");
       buffer = events.pop() || "";
 
@@ -595,6 +612,11 @@ async function streamRun(formData, onDone) {
         try {
           const ev = JSON.parse(match[1]);
           if (ev.type === "chunk" && ev.data) {
+            // Phase 3: agent is running — switch to indeterminate bar
+            if (!agentStarted) {
+              agentStarted = true;
+              setLoading(true, "Processing…");
+            }
             const d = ev.data;
             if (d.model) {
               for (const m of d.model) {
@@ -617,20 +639,53 @@ async function streamRun(formData, onDone) {
                 if (content) appendMessage("tool", content, name);
               }
             }
+          } else if (ev.type === "status") {
+            setLoading(true, ev.message || "Preparing…");
+            appendMessage("system", ev.message || "Preparing…", null);
           } else if (ev.type === "retry") {
             appendMessage("system", ev.message || "Retrying due to rate limit…", null);
           } else if (ev.type === "done") {
             setLoading(false);
             if (ev.error) showError(ev.error);
             else if (ev.csv) onDone(ev.csv);
+            resolve();
           }
         } catch (_) {}
       }
     }
-  } catch (e) {
-    showError(e.message);
-    setLoading(false);
-  }
+
+    // Receive SSE events as they stream in
+    xhr.onprogress = () => parseSSE();
+
+    xhr.onload = () => {
+      parseSSE();
+      if (xhr.status >= 400) {
+        try {
+          const err = JSON.parse(xhr.responseText);
+          let msg = err.error || `Request failed (${xhr.status})`;
+          if (xhr.status === 422 && err.detail) {
+            const parts = Array.isArray(err.detail)
+              ? err.detail.map((d) => `${d.loc?.join(".") || "?"}: ${d.msg || ""}`)
+              : [String(err.detail)];
+            msg = `Validation error: ${parts.join("; ")}`;
+          }
+          showError(msg);
+        } catch (_) {
+          showError(`Request failed (${xhr.status}): ${xhr.statusText}`);
+        }
+        setLoading(false);
+        resolve();
+      }
+    };
+
+    xhr.onerror = () => {
+      showError("Network error — the server may be unreachable.");
+      setLoading(false);
+      resolve();
+    };
+
+    xhr.send(formData);
+  });
 }
 
 // ─── Run History ──────────────────────────────────────────────────────────────
