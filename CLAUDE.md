@@ -95,7 +95,7 @@ GCS auth is via ADC (`gcloud auth application-default login`), not in `.env`.
 ## Models
 | Role | Default | Alternatives |
 |------|---------|-------------|
-| Main agent | `anthropic:claude-opus-4-6` | `anthropic:claude-sonnet-4-6`, `google_genai:gemini-3.1-pro-preview` |
+| Main agent | `google_genai:gemini-3.1-pro-preview` | `anthropic:claude-opus-4-6`, `anthropic:claude-sonnet-4-6` |
 | Subagent | `google_genai:gemini-3-flash-preview` | `anthropic:claude-sonnet-4-6` |
 
 ## 6 Predefined Use Cases (`test_case_configs.py`)

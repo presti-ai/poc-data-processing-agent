@@ -41,7 +41,7 @@ def process_data(
     output_columns: List[Dict[str, str]],
     additional_instructions: Optional[str] = None,
     example_output_path: Optional[Path | str] = None,
-    model_name: str = "anthropic:claude-opus-4-6",
+    model_name: str = "google_genai:gemini-3.1-pro-preview",
     save_output_dir: Optional[Path | str] = None,
     on_stream_chunk: Optional[Callable[[str, dict], None]] = None,
 ) -> tuple[pd.DataFrame, List[Dict[str, str]]]:
@@ -371,7 +371,7 @@ def process_data_two_phase(
     input_path: Path,
     output_columns: List[Dict[str, str]],
     additional_instructions: Optional[str],
-    model_name: str = "anthropic:claude-opus-4-6",
+    model_name: str = "google_genai:gemini-3.1-pro-preview",
     sample_size: int = 5,
     validated_phase1_df: Optional[pd.DataFrame] = None,
 ) -> tuple[
