@@ -296,8 +296,8 @@ async def api_run(request: Request):
     history_file_ids = form.get("history_file_ids", "[]")
     output_columns = form.get("output_columns", "[]")
     additional_instructions = form.get("additional_instructions", "") or ""
-    model_name = form.get("model_name", "anthropic:claude-opus-4-6") or "anthropic:claude-opus-4-6"
-    subagent_model_name = form.get("subagent_model_name", "openai:gpt-5.4") or "openai:gpt-5.4"
+    model_name = form.get("model_name", "google_genai:gemini-3.1-pro-preview") or "google_genai:gemini-3.1-pro-preview"
+    subagent_model_name = form.get("subagent_model_name", "google_genai:gemini-3-flash-preview") or "google_genai:gemini-3-flash-preview"
     try:
         history_gcs_uris = json.loads(history_file_ids) if history_file_ids else []
     except json.JSONDecodeError:

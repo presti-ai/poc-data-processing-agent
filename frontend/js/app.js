@@ -555,9 +555,9 @@ async function runAgent(isRerun) {
     const additionalInstructionsEl = document.getElementById("additionalInstructions");
     const additionalInstructions = additionalInstructionsEl?.value ?? "";
     const modelNameEl = document.getElementById("modelName");
-    const modelName = modelNameEl?.value ?? "anthropic:claude-opus-4-6";
+    const modelName = modelNameEl?.value ?? "google_genai:gemini-3.1-pro-preview";
     const subagentModelNameEl = document.getElementById("subagentModelName");
-    const subagentModelName = subagentModelNameEl?.value ?? "openai:gpt-5.4";
+    const subagentModelName = subagentModelNameEl?.value ?? "google_genai:gemini-3-flash-preview";
 
     const formData = new FormData();
     for (let i = 0; i < (files?.length || 0); i++) formData.append("files", files[i]);
